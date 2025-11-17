@@ -22,6 +22,7 @@ from src.config import (
     SessionInfo,
     MAX_WORKERS,
     parse_arguments,
+    apply_argument_overrides,
 )
 from src.crawlers.crawler_utils import (
     extract_all_album_item_pages,
@@ -169,8 +170,9 @@ async def main() -> None:
     clear_terminal()
     check_python_version()
 
-    bunkr_status = get_bunkr_status()
     args = parse_arguments()
+    apply_argument_overrides(args)
+    bunkr_status = get_bunkr_status()
     live_manager = initialize_managers(disable_ui=args.disable_ui)
 
     try:

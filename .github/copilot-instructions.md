@@ -19,6 +19,10 @@
 - Docker image bundles both layers: `docker build -t bunkrdownloader .` then `docker run -p 8000:8000 -v $PWD/Downloads:/app/Downloads bunkrdownloader` to persist downloads locally.
 - Compose stack mirrors the same image: update `.env` (tracked) and run `docker compose up --build`; `API_PORT` controls the published port, `DOWNLOADS_DIR` sets the bind mount.
 
+## Pre-commit Requirements
+- Before staging or committing anything, run `python -m pylint $(git ls-files '*.py')` inside the activated virtualenv and resolve every reported issue—no commits or pushes are allowed while lint fails.
+- Run the relevant local smoke tests for the area you touched (CLI runs, `python -m compileall src`, frontend build, etc.) and do not push until they succeed, so CI workflows stay green.
+
 ## Conventions & Integration Points
 - Extend CLI options in `src/config.py` (`setup_parser`/`parse_arguments`) so both entrypoints stay aligned.
 - Always fetch HTML with `general_utils.fetch_page`: it retries 403s by swapping to the `.cr` domain and writes bad URLs into `session.log`.

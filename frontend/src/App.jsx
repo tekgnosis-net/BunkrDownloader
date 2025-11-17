@@ -82,7 +82,12 @@ const DEFAULT_SETTINGS = {
   logLevel: "info",
   logRetention: DEFAULT_LOG_RETENTION,
   maxWorkers: 3,
-  autoScrollLogs: true
+  autoScrollLogs: true,
+  statusPage: "https://status.bunkr.ru/",
+  apiEndpoint: "https://bunkr.cr/api/vs",
+  downloadReferer: "https://get.bunkrr.su/",
+  fallbackDomain: "bunkr.cr",
+  userAgent: "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0",
 };
 const LOG_RETENTION_RANGE = { min: 100, max: 1000, step: 50 };
 const MAX_WORKERS_RANGE = { min: 1, max: 8 };
@@ -127,6 +132,14 @@ const clampPercent = (value) => {
 const toFiniteNumber = (value, fallback = 0) => {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
+};
+
+const optionalTrimmed = (value) => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
 };
 
 function App() {
@@ -393,6 +406,62 @@ function App() {
   }, [form]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const loadDefaults = async () => {
+      try {
+        const { data } = await api.get("/settings/defaults");
+        if (!data?.network || cancelled) {
+          return;
+        }
+        const {
+          status_page: statusPage,
+          api_endpoint: apiEndpoint,
+          download_referer: downloadReferer,
+          fallback_domain: fallbackDomain,
+          user_agent: userAgent,
+        } = data.network;
+
+        setSettings((prev) => {
+          if (cancelled) {
+            return prev;
+          }
+          return {
+            ...prev,
+            statusPage:
+              prev.statusPage === DEFAULT_SETTINGS.statusPage && statusPage
+                ? statusPage
+                : prev.statusPage,
+            apiEndpoint:
+              prev.apiEndpoint === DEFAULT_SETTINGS.apiEndpoint && apiEndpoint
+                ? apiEndpoint
+                : prev.apiEndpoint,
+            downloadReferer:
+              prev.downloadReferer === DEFAULT_SETTINGS.downloadReferer && downloadReferer
+                ? downloadReferer
+                : prev.downloadReferer,
+            fallbackDomain:
+              prev.fallbackDomain === DEFAULT_SETTINGS.fallbackDomain && fallbackDomain
+                ? fallbackDomain
+                : prev.fallbackDomain,
+            userAgent:
+              prev.userAgent === DEFAULT_SETTINGS.userAgent && userAgent
+                ? userAgent
+                : prev.userAgent,
+          };
+        });
+      } catch (error) {
+        console.warn("Failed to fetch default settings", error);
+      }
+    };
+
+    loadDefaults();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
@@ -621,6 +690,14 @@ function App() {
     resetJobState();
 
     try {
+      const network = {
+        status_page: optionalTrimmed(settings.statusPage),
+        api_endpoint: optionalTrimmed(settings.apiEndpoint),
+        download_referer: optionalTrimmed(settings.downloadReferer),
+        user_agent: optionalTrimmed(settings.userAgent),
+        fallback_domain: optionalTrimmed(settings.fallbackDomain),
+      };
+
       const payload = {
         urls,
         include: parseList(form.include),
@@ -628,7 +705,8 @@ function App() {
         custom_path: form.customPath || null,
         disable_disk_check: form.disableDiskCheck,
         log_level: settings.logLevel,
-        max_workers: settings.maxWorkers
+        max_workers: settings.maxWorkers,
+        network,
       };
 
       const { data } = await api.post("/downloads", payload);
@@ -1065,6 +1143,65 @@ function App() {
                         </SliderTrack>
                         <SliderThumb boxSize={4} />
                       </Slider>
+                    </FormControl>
+                  </Stack>
+                </Box>
+
+                <Box bg={cardBg} borderWidth={1} borderColor={borderColor} rounded="md" shadow="md" p={6}>
+                  <Stack spacing={4}>
+                    <Heading size="md">Network</Heading>
+                    <Text fontSize="sm" color={mutedText}>
+                      Update the Bunkr endpoints and headers used when fetching albums. Leave fields untouched to keep the server defaults.
+                    </Text>
+                    <FormControl>
+                      <FormLabel>Status page URL</FormLabel>
+                      <Tooltip label="Used to detect available download servers" hasArrow shouldWrapChildren>
+                        <Input
+                          value={settings.statusPage}
+                          onChange={(e) => setSettings((prev) => ({ ...prev, statusPage: e.target.value }))}
+                          placeholder="https://status.bunkr.ru/"
+                        />
+                      </Tooltip>
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>API endpoint</FormLabel>
+                      <Tooltip label="Endpoint queried to resolve media URLs" hasArrow shouldWrapChildren>
+                        <Input
+                          value={settings.apiEndpoint}
+                          onChange={(e) => setSettings((prev) => ({ ...prev, apiEndpoint: e.target.value }))}
+                          placeholder="https://bunkr.cr/api/vs"
+                        />
+                      </Tooltip>
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>Download referer</FormLabel>
+                      <Tooltip label="Referer header sent with file downloads" hasArrow shouldWrapChildren>
+                        <Input
+                          value={settings.downloadReferer}
+                          onChange={(e) => setSettings((prev) => ({ ...prev, downloadReferer: e.target.value }))}
+                          placeholder="https://get.bunkrr.su/"
+                        />
+                      </Tooltip>
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>Fallback domain</FormLabel>
+                      <Tooltip label="Domain used when retrying requests after 403 responses" hasArrow shouldWrapChildren>
+                        <Input
+                          value={settings.fallbackDomain}
+                          onChange={(e) => setSettings((prev) => ({ ...prev, fallbackDomain: e.target.value }))}
+                          placeholder="bunkr.cr"
+                        />
+                      </Tooltip>
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>User agent</FormLabel>
+                      <Tooltip label="Override the browser fingerprint sent with HTTP requests" hasArrow shouldWrapChildren>
+                        <Textarea
+                          value={settings.userAgent}
+                          onChange={(e) => setSettings((prev) => ({ ...prev, userAgent: e.target.value }))}
+                          minH="96px"
+                        />
+                      </Tooltip>
                     </FormControl>
                   </Stack>
                 </Box>

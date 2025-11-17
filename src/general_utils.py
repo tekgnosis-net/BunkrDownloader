@@ -25,6 +25,7 @@ from requests import Response
 from .config import (
     DOWNLOAD_HEADERS,
     FETCH_ERROR_MESSAGES,
+    HEADERS,
     MIN_DISK_SPACE_GB,
     HTTPStatus,
 )
@@ -62,7 +63,9 @@ async def fetch_page(url: str, retries: int = 5) -> BeautifulSoup | None:
 
     for attempt in range(retries):
         try:
-            response = requests.Session().get(url, timeout=40)
+            with requests.Session() as session:
+                session.headers.update(HEADERS)
+                response = session.get(url, timeout=40)
             if response.status_code == HTTPStatus.FORBIDDEN and not tried_cr:
                 tried_cr = True
                 url = change_domain_to_cr(url)

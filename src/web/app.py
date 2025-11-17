@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, AnyHttpUrl
 from downloader import validate_and_download
 from src import __version__ as __app_version__
 from src.bunkr_utils import get_bunkr_status
-from src.config import MAX_WORKERS
+from src.config import MAX_WORKERS, get_network_settings, update_network_settings
 
 _env_version = os.getenv("APP_VERSION", "")
 if _env_version and _env_version.lower() != "latest":
@@ -42,6 +42,32 @@ def _format_duration(delta: timedelta) -> str:
     return f"{hours:02} hrs {minutes:02} mins {seconds:02} secs"
 
 
+class NetworkOverrides(BaseModel):
+    """Optional overrides for Bunkr networking endpoints."""
+
+    status_page: AnyHttpUrl | None = Field(
+        default=None,
+        description="Status page URL override.",
+    )
+    api_endpoint: AnyHttpUrl | None = Field(
+        default=None,
+        description="API endpoint override.",
+    )
+    download_referer: AnyHttpUrl | None = Field(
+        default=None,
+        description="Referer header override.",
+    )
+    fallback_domain: str | None = Field(
+        default=None,
+        description="Fallback domain when retrying.",
+    )
+    user_agent: str | None = Field(
+        default=None,
+        max_length=512,
+        description="Custom user agent for requests.",
+    )
+
+
 class DownloadRequest(BaseModel):
     """Payload used to kick off a download job via the HTTP API."""
 
@@ -59,6 +85,10 @@ class DownloadRequest(BaseModel):
         ge=1,
         le=10,
         description="Maximum concurrent album downloads to run.",
+    )
+    network: NetworkOverrides | None = Field(
+        default=None,
+        description="Optional network configuration overrides applied before the job runs.",
     )
 
 
@@ -382,6 +412,11 @@ def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
         disable_disk_check=request.disable_disk_check,
         log_level=request.log_level,
         max_workers=request.max_workers,
+        status_page=request.network.status_page if request.network else None,
+        bunkr_api=request.network.api_endpoint if request.network else None,
+        download_referer=request.network.download_referer if request.network else None,
+        user_agent=request.network.user_agent if request.network else None,
+        fallback_domain=request.network.fallback_domain if request.network else None,
     )
 
 
@@ -395,6 +430,14 @@ async def _run_download_job(job: Job) -> None:
     job.event_broker.publish(_status_event(JobStatus.RUNNING))
 
     try:
+        if job.request.network:
+            update_network_settings(
+                status_page=job.request.network.status_page,
+                api_endpoint=job.request.network.api_endpoint,
+                download_referer=job.request.network.download_referer,
+                user_agent=job.request.network.user_agent,
+                fallback_domain=job.request.network.fallback_domain,
+            )
         bunkr_status = await asyncio.to_thread(get_bunkr_status)
         manager.log_debug(
             event="Debug",
@@ -441,6 +484,13 @@ async def ensure_frontend() -> None:
     dist_path = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
     if dist_path.exists():
         app.mount("/", StaticFiles(directory=dist_path, html=True), name="frontend")
+
+
+@app.get("/api/settings/defaults")
+async def get_settings_defaults() -> dict[str, dict[str, str]]:
+    """Return default settings so the frontend can mirror server configuration."""
+
+    return {"network": get_network_settings()}
 
 
 @app.post("/api/downloads", response_model=DownloadResponse)

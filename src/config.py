@@ -28,9 +28,28 @@ MIN_DISK_SPACE_GB = 2          # Minimum free disk space (in GB) required.
 # ============================
 # API / Status Endpoints
 # ============================
-STATUS_PAGE = "https://status.bunkr.ru/"  # The URL of the status page for checking
-                                          # service availability.
-BUNKR_API = "https://bunkr.cr/api/vs"     # The API for retrieving encryption data.
+DEFAULT_STATUS_PAGE = os.getenv(
+    "BUNKR_STATUS_URL",
+    "https://status.bunkr.ru/",
+)
+DEFAULT_BUNKR_API = os.getenv(
+    "BUNKR_API_URL",
+    "https://bunkr.cr/api/vs",
+)
+DEFAULT_DOWNLOAD_REFERER = os.getenv(
+    "BUNKR_DOWNLOAD_REFERER",
+    "https://get.bunkrr.su/",
+)
+DEFAULT_USER_AGENT = os.getenv(
+    "BUNKR_USER_AGENT",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0",
+)
+DEFAULT_FALLBACK_DOMAIN = os.getenv("BUNKR_FALLBACK_DOMAIN", "bunkr.cr")
+
+STATUS_PAGE = DEFAULT_STATUS_PAGE  # The URL of the status page for checking
+                                   # service availability.
+BUNKR_API = DEFAULT_BUNKR_API      # The API for retrieving encryption data.
+FALLBACK_DOMAIN = DEFAULT_FALLBACK_DOMAIN
 
 # ============================
 # Regex Patterns
@@ -120,17 +139,15 @@ FETCH_ERROR_MESSAGES: dict[HTTPStatus, str] = {
 }
 
 # Headers used for general HTTP requests.
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0"
-    ),
+HEADERS: dict[str, str] = {
+    "User-Agent": DEFAULT_USER_AGENT,
 }
 
 # Headers specifically tailored for download requests.
-DOWNLOAD_HEADERS = {
-    **HEADERS,
+DOWNLOAD_HEADERS: dict[str, str] = {
+    "User-Agent": HEADERS["User-Agent"],
     "Connection": "keep-alive",
-    "Referer": "https://get.bunkrr.su/",
+    "Referer": DEFAULT_DOWNLOAD_REFERER,
 }
 
 # ============================
@@ -151,6 +168,62 @@ class SessionInfo:
     args: Namespace | None
     bunkr_status: dict[str, str]
     download_path: str
+
+
+def update_network_settings(
+    *,
+    status_page: str | None = None,
+    api_endpoint: str | None = None,
+    download_referer: str | None = None,
+    user_agent: str | None = None,
+    fallback_domain: str | None = None,
+) -> None:
+    """Update global network configuration used for Bunkr requests."""
+
+    module_globals = globals()
+
+    if status_page:
+        module_globals["STATUS_PAGE"] = status_page
+
+    if api_endpoint:
+        module_globals["BUNKR_API"] = api_endpoint
+
+    if fallback_domain:
+        module_globals["FALLBACK_DOMAIN"] = fallback_domain
+
+    if user_agent:
+        HEADERS["User-Agent"] = user_agent
+        DOWNLOAD_HEADERS["User-Agent"] = user_agent
+
+    if download_referer:
+        DOWNLOAD_HEADERS["Referer"] = download_referer
+
+
+def get_network_settings() -> dict[str, str]:
+    """Return the currently active Bunkr networking settings."""
+
+    return {
+        "status_page": STATUS_PAGE,
+        "api_endpoint": BUNKR_API,
+        "download_referer": DOWNLOAD_HEADERS.get("Referer", ""),
+        "user_agent": HEADERS.get("User-Agent", ""),
+        "fallback_domain": FALLBACK_DOMAIN,
+    }
+
+
+def apply_argument_overrides(args: Namespace | None) -> None:
+    """Apply network overrides captured from CLI or API namespaces."""
+
+    if args is None:
+        return
+
+    update_network_settings(
+        status_page=getattr(args, "status_page", None),
+        api_endpoint=getattr(args, "bunkr_api", None),
+        download_referer=getattr(args, "download_referer", None),
+        user_agent=getattr(args, "user_agent", None),
+        fallback_domain=getattr(args, "fallback_domain", None),
+    )
 
 @dataclass
 class AlbumInfo:
@@ -202,6 +275,36 @@ def add_common_arguments(parser: ArgumentParser) -> None:
         choices=["debug", "info", "warning", "error"],
         default="info",
         help="Verbosity used for runtime logs.",
+    )
+    parser.add_argument(
+        "--status-page",
+        type=str,
+        default=STATUS_PAGE,
+        help="Override the Bunkr status page URL (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--bunkr-api",
+        type=str,
+        default=BUNKR_API,
+        help="Override the Bunkr API endpoint (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--download-referer",
+        type=str,
+        default=DOWNLOAD_HEADERS.get("Referer", DEFAULT_DOWNLOAD_REFERER),
+        help="Referer header sent with download requests (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--user-agent",
+        type=str,
+        default=HEADERS.get("User-Agent", DEFAULT_USER_AGENT),
+        help="User agent string for HTTP requests (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--fallback-domain",
+        type=str,
+        default=FALLBACK_DOMAIN,
+        help="Fallback Bunkr domain used after 403 responses (default: %(default)s).",
     )
 
 

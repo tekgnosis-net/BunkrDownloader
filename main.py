@@ -14,15 +14,18 @@ from argparse import Namespace
 
 from downloader import parse_arguments, validate_and_download
 from src.bunkr_utils import get_bunkr_status
-from src.config import SESSION_LOG, URLS_FILE
+from src.config import SESSION_LOG, URLS_FILE, apply_argument_overrides
 from src.file_utils import read_file, write_file
 from src.general_utils import check_python_version, clear_terminal
 from src.managers.live_manager import initialize_managers
 
 
-async def process_urls(urls: list[str], args: Namespace) -> None:
+async def process_urls(
+    urls: list[str],
+    args: Namespace,
+    bunkr_status: dict[str, str],
+) -> None:
     """Validate and downloads items for a list of URLs."""
-    bunkr_status = get_bunkr_status()
     live_manager = initialize_managers(disable_ui=args.disable_ui)
 
     with live_manager.live:
@@ -41,10 +44,12 @@ async def main() -> None:
     # Check Python version and parse arguments
     check_python_version()
     args = parse_arguments(common_only=True)
+    apply_argument_overrides(args)
+    bunkr_status = get_bunkr_status()
 
     # Read and process URLs, ignoring empty lines
     urls = [url.strip() for url in read_file(URLS_FILE) if url.strip()]
-    await process_urls(urls, args)
+    await process_urls(urls, args, bunkr_status)
 
     # Clear URLs file
     write_file(URLS_FILE)
