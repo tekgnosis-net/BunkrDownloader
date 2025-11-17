@@ -1,8 +1,16 @@
 services:
   bunkr:
     image: ghcr.io/tekgnosis-net/bunkrdownloader:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${IMAGE_TAG:-latest}
+        APP_UID: ${UID:-1000}
+        APP_GID: ${GID:-1000}
     container_name: bunkr
-    pull_policy: always
+    pull_policy: missing
+    user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "${API_PORT:-8000}:8000"
     environment:

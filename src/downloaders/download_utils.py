@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import shutil
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
@@ -28,39 +29,60 @@ def get_chunk_size(file_size: int) -> int:
     return LARGE_FILE_CHUNK_SIZE
 
 
-def _resolve_content_length(response: Response, download_url: str | None) -> int | None:
-    """Extract a positive content length from the response or fallback to HEAD."""
+def _normalise_length(value: object) -> int | None:
+    """Convert a possible integer-like value into a positive int."""
 
-    def _normalise(value: object) -> int | None:
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            return None
-        return number if number > 0 else None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
-    header_length = _normalise(response.headers.get("Content-Length"))
+
+def _extract_response_length(response: Response) -> int | None:
+    """Pull a positive content length from response metadata when available."""
+
+    header_length = _normalise_length(response.headers.get("Content-Length"))
     if header_length:
         return header_length
 
-    raw_remaining = _normalise(getattr(response.raw, "length_remaining", None))
+    raw_remaining = _normalise_length(getattr(response.raw, "length_remaining", None))
     if raw_remaining:
         return raw_remaining
 
-    if not download_url:
-        return None
+    return None
+
+
+def _head_content_length(download_url: str, *, timeout: float = 5.0) -> int | None:
+    """Best-effort HEAD request used to infer missing content lengths."""
 
     try:
         head_resp = requests.head(
             download_url,
             headers=DOWNLOAD_HEADERS,
-            timeout=15,
+            timeout=timeout,
             allow_redirects=True,
         )
         head_resp.raise_for_status()
     except RequestException:
         return None
 
-    return _normalise(head_resp.headers.get("Content-Length"))
+    return _normalise_length(head_resp.headers.get("Content-Length"))
+
+
+def _resolve_content_length(
+    response: Response,
+    download_url: str | None,
+) -> tuple[int | None, Future[int | None] | None, ThreadPoolExecutor | None]:
+    """Determine an expected content length and return any async fallback."""
+
+    length = _extract_response_length(response)
+    if length or not download_url:
+        return length, None, None
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_head_content_length, download_url)
+    return None, future, executor
 
 
 def _log_once(progress_manager: ProgressManager, message: str) -> None:
@@ -94,6 +116,58 @@ class _ProgressEstimator:  # pylint: disable=too-few-public-methods
         return self.estimate
 
 
+def _emit_progress(
+    progress_manager: ProgressManager,
+    task: int,
+    *,
+    file_size: int | None,
+    estimator: _ProgressEstimator | None,
+    total_downloaded: int,
+) -> _ProgressEstimator | None:  # pylint: disable=too-many-arguments
+    """Update the task progress, returning the (possibly new) estimator."""
+
+    if file_size:
+        progress_manager.update_task(
+            task,
+            completed=min(100.0, (total_downloaded / file_size) * 100),
+        )
+        return estimator
+
+    estimator = estimator or _ProgressEstimator(float(DEFAULT_UNKNOWN_SIZE_BASELINE))
+    progress_manager.update_task(
+        task,
+        completed=estimator.update(total_downloaded),
+    )
+    return estimator
+
+# pylint: disable=too-many-arguments
+def _finalise_download(
+    *,
+    file_size: int | None,
+    total_downloaded: int,
+    temp_path: Path,
+    final_path: str,
+    progress_manager: ProgressManager,
+    task: int,
+) -> bool:
+    """Rename the in-flight file if possible and report completion."""
+
+    if file_size:
+        if total_downloaded != file_size:
+            return True
+        shutil.move(temp_path, final_path)
+        progress_manager.update_task(task, completed=100)
+        return False
+
+    try:
+        shutil.move(temp_path, final_path)
+    except OSError:
+        return True
+    progress_manager.update_task(task, completed=100)
+    return False
+# pylint: enable=too-many-arguments
+
+
 def save_file_with_progress(
     response: Response,
     download_path: str,
@@ -101,7 +175,7 @@ def save_file_with_progress(
     progress_manager: ProgressManager,
     *,
     download_url: str | None = None,
-) -> bool:
+) -> bool:  # pylint: disable=too-many-locals
     """Save the file from the response to the specified path.
 
     Adds a `.temp` extension for in-flight downloads and attempts to infer the
@@ -109,7 +183,7 @@ def save_file_with_progress(
     omits the header, a best-effort estimate is used so the UI still reflects
     activity while streaming.
     """
-    file_size = _resolve_content_length(response, download_url)
+    file_size, head_future, head_executor = _resolve_content_length(response, download_url)
     if file_size is None:
         logging.warning("Content length unavailable for %s", download_path)
         _log_once(
@@ -133,37 +207,41 @@ def save_file_with_progress(
                 if chunk is not None:
                     file.write(chunk)
                     total_downloaded += len(chunk)
-                    if file_size:
-                        progress_manager.update_task(
-                            task,
-                            completed=min(100.0, (total_downloaded / file_size) * 100),
-                        )
-                    else:
-                        estimator = estimator or _ProgressEstimator(
-                            float(len(chunk)) or 1.0
-                        )
-                        progress_manager.update_task(
-                            task,
-                            completed=estimator.update(total_downloaded),
-                        )
+                    estimator = _emit_progress(
+                        progress_manager,
+                        task,
+                        file_size=file_size,
+                        estimator=estimator,
+                        total_downloaded=total_downloaded,
+                    )
+                    if head_future and file_size is None and head_future.done():
+                        head_length = head_future.result()
+                        head_future = None
+
+                        if head_length:
+                            file_size = head_length
+                            estimator = None
+                            progress_manager.update_task(
+                                task,
+                                completed=min(
+                                    100.0,
+                                    (total_downloaded / file_size) * 100,
+                                ),
+                            )
 
     # Handle partial downloads caused by network interruptions
     except ChunkedEncodingError:
         return True
 
-    # Rename temp file to final filename if fully downloaded
-    if file_size and total_downloaded == file_size:
-        shutil.move(temp_download_path, download_path)
-        progress_manager.update_task(task, completed=100)
-        return False
+    finally:
+        if head_executor:
+            head_executor.shutdown(wait=False, cancel_futures=True)
 
-    # Keep partial file and return True if incomplete
-    if not file_size:
-        try:
-            shutil.move(temp_download_path, download_path)
-        except OSError:
-            return True
-        progress_manager.update_task(task, completed=100)
-        return False
-
-    return True
+    return _finalise_download(
+        file_size=file_size,
+        total_downloaded=total_downloaded,
+        temp_path=temp_download_path,
+        final_path=download_path,
+        progress_manager=progress_manager,
+        task=task,
+    )

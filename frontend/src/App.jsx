@@ -709,14 +709,16 @@ function App() {
         network,
       };
 
-      const { data } = await api.post("/downloads", payload);
-      setJobId(data.job_id);
-      jobIdRef.current = data.job_id;
-      eventIndexRef.current = 0;
-      jobStatusRef.current = "pending";
-      stopPolling();
-      clearReconnect();
-      openWebSocket(data.job_id);
+  const { data } = await api.post("/downloads", payload);
+  setJobId(data.job_id);
+  setJobStatus("pending");
+  jobIdRef.current = data.job_id;
+  eventIndexRef.current = 0;
+  jobStatusRef.current = "pending";
+  stopPolling();
+  clearReconnect();
+  startPolling(data.job_id);
+  openWebSocket(data.job_id);
       toast({
         title: "Download started",
         description: `Tracking job ${data.job_id}`,
