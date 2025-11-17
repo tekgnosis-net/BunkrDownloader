@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.2.0 (2025-11-17)
+
+### Feature
+
+* feat: add configurable logging and ui controls ([`b76d40f`](https://github.com/tekgnosis-net/BunkrDownloader/commit/b76d40f7a3d87a53a71f207c8e379e206ba48c22))
+
 ## v0.1.0 (2025-11-17)
 
 ### Build
