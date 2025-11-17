@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.3.1 (2025-11-17)
+
+### Fix
+
+* fix: source version from environment ([`7a5e814`](https://github.com/tekgnosis-net/BunkrDownloader/commit/7a5e8146b2e609db3d6a3af511ff25b4ba67d177))
+
 ## v0.3.0 (2025-11-17)
 
 ### Feature
