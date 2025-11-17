@@ -4,15 +4,13 @@ title: "[FEATURE] <Enter a title for your feature here>"
 labels: [ "enhancement" ]
 
 body:
-  - id: thank-you
-    type: markdown
-    
+  - type: markdown
+
     attributes:
       value: Thanks for taking the time to fill out this feature request template!
 
-  - id: submission-guidelines
-    type: markdown
-    
+  - type: markdown
+
     attributes:
       value: |
         > [!IMPORTANT]

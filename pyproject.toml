@@ -13,3 +13,4 @@ version_toml = "pyproject.toml:project.version"
 commit_parser = "angular"
 build_command = ""
 upload_to_repository = false
+upload_to_release = false
