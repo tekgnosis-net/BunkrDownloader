@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.3.0 (2025-11-17)
+
+### Feature
+
+* feat: allow configuring bunkr endpoints ([`80beda2`](https://github.com/tekgnosis-net/BunkrDownloader/commit/80beda2c4ef8bee86b626f4097e6467d4d6911cd))
+
 ## v0.2.1 (2025-11-17)
 
 ### Fix
