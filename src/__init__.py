@@ -16,6 +16,8 @@ to be easily imported and used across different parts of the application.
 
 # src/__init__.py
 
+import os
+
 __all__ = [
     "bunkr_utils",
     "config",
@@ -25,4 +27,5 @@ __all__ = [
     "__version__",
 ]
 
-__version__ = "0.1.0"
+_SEMANTIC_VERSION = "0.3.0"
+__version__ = os.getenv("APP_VERSION", _SEMANTIC_VERSION)
