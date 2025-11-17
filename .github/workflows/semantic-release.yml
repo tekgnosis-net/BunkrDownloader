@@ -30,6 +30,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install python-semantic-release==9.8.6
 
+      - name: Seed initial release tag
+        run: |
+          if ! git tag --list "v*" | grep -q .; then
+            echo "::notice::Seeding initial semantic-release baseline tag v0.0.0"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a v0.0.0 -m "chore: seed semantic-release baseline" $(git rev-list --max-parents=0 HEAD)
+            git push origin v0.0.0
+          fi
+
       - name: Run semantic-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

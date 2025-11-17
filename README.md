@@ -17,6 +17,7 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
   - [Architecture](#architecture)
   - [Development](#development)
   - [Automation](#automation)
+  - [Support & Issues](#support--issues)
   - [Forked credits](#forked-credits)
   - [License](#license)
 
@@ -96,6 +97,12 @@ python3 main.py [shared flags]
 - `.github/workflows/semantic-release.yml` promotes commits merged into `main` using [python-semantic-release](https://python-semantic-release.readthedocs.io/en/latest/) to create Git tags, changelog entries, and GitHub releases.
 - Images publish under `ghcr.io/tekgnosis-net/bunkrdownloader:latest` and `:sha`. Authenticate with `ghcr.io` using a PAT or `docker login ghcr.io -u <user> -p <token>`.
   - Version tags matching the generated semantic version (for example `ghcr.io/tekgnosis-net/bunkrdownloader:1.2.3`) are published alongside `latest`.
+
+## Support & Issues
+- Open a new issue from the repository’s **Issues → New issue** page; choose the **Bug report** template for defects or the **Feature request** template for enhancements.
+- The templates collect environment details (OS, Python version, tool version) and walk you through logs, reproduction steps, and desired outcomes so maintainers can triage quickly.
+- Always confirm you’re running the latest release from [GitHub Releases](https://github.com/tekgnosis-net/BunkrDownloader/releases) and search for duplicates before filing.
+- If none of the templates fit, click **Open a blank issue** is disabled; instead, adapt one of the provided forms and note any extra context in the “Additional context” field.
 
 ## Forked credits
 This project is a fork of [Lysagxra/BunkrDownloader](https://github.com/Lysagxra/BunkrDownloader). However, it has been modified for a web dashboard interface and other enhancements such as dockerizing the application.

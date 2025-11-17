@@ -2,7 +2,7 @@ name: Feature request
 description: Suggest an idea for this project
 title: "[FEATURE] <Enter a title for your feature here>"
 labels: [ "enhancement" ]
-assignees: [ Lysagxra ]
+assignees: [ tekgnosis-net ]
 
 body:
   - id: thank-you
@@ -25,8 +25,8 @@ body:
         > Requests submitted in any other language will be marked as invalid.
         > Thank you for your understanding and cooperation :)
 
-        You can download the latest version of the tool here:
-        https://github.com/Lysagxra/BunkrDownloader/releases
+  You can download the latest version of the tool here:
+  https://github.com/tekgnosis-net/BunkrDownloader/releases
 
   - id: feature-description
     type: textarea
