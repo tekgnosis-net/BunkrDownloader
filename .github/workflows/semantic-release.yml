@@ -43,4 +43,4 @@ jobs:
       - name: Run semantic-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python -m semantic_release publish
+        run: python -m semantic_release version
