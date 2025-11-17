@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.3.4 (2025-11-17)
+
+### Fix
+
+* fix: stabilise progress reporting ([`fe96e77`](https://github.com/tekgnosis-net/BunkrDownloader/commit/fe96e77eb53fbbd55c18e28dcbb0e7ceb328d5d5))
+
 ## v0.3.3 (2025-11-17)
 
 ### Fix
