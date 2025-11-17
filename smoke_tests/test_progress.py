@@ -71,7 +71,7 @@ class ProgressSmokeTests(unittest.TestCase):
         self._exit_stack = ExitStack()
         self.addCleanup(self._exit_stack.close)
         tmp_dir = self._exit_stack.enter_context(tempfile.TemporaryDirectory())
-        self.destination = Path(tmp_dir.name) / "sample.bin"
+        self.destination = Path(tmp_dir) / "sample.bin"
 
     def test_known_length_stream_reports_percentage(self) -> None:
         """Streams with a length header should emit percentage progress."""
