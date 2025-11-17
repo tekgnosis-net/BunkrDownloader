@@ -1,0 +1,15 @@
+[project]
+name = "bunkrdownloader"
+version = "0.1.0"
+description = "Rich CLI and web dashboard for downloading from Bunkr."
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.python-semantic-release]
+branch = "main"
+tag_format = "v{version}"
+version_variable = "src/__init__.py:__version__"
+version_toml = "pyproject.toml:project.version"
+commit_parser = "angular"
+build_command = ""
+upload_to_repository = false

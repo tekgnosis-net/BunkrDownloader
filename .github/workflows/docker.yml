@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+    tags:
+      - v*
+  workflow_dispatch:
 
 concurrency:
   group: docker-${{ github.ref }}
@@ -43,6 +46,21 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}},enable={{is_semver}}
+            type=semver,pattern={{major}}.{{minor}},enable={{is_semver}}
+            type=semver,pattern={{major}},enable={{is_semver}}
+
+      - name: Derive application version
+        id: version
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          if [ -n "$VERSION" ]; then
+            echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -52,5 +70,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

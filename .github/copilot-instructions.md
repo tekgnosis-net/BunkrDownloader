@@ -10,7 +10,8 @@
 - `frontend/` is a Vite + Chakra UI dashboard that listens on `/ws/jobs/{id}` for those events and POSTs to `/api/downloads`. The FastAPI app serves the production build from `frontend/dist` once `npm run build` has run.
 
 ## Key Workflows
-- Install deps once with `pip install -r requirements.txt` (Python ≥3.10). No virtualenv tooling is committed, so choose your own.
+- Always create and activate a local virtual environment (`python3 -m venv .venv` then `source .venv/bin/activate`) before running Python commands.
+- Install deps once inside the virtual environment with `pip install -r requirements.txt` (Python ≥3.10).
 - Single URL: `python3 downloader.py <bunkr_url> [--ignore STR ... --include STR ... --custom-path /path --disable-ui --disable-disk-check]`. Album/file detection happens automatically through `url_utils.check_url_type`.
 - Batch mode: populate `URLs.txt` (one URL per line) and run `python3 main.py [shared flags]`. The script clears `session.log` before starting and truncates `URLs.txt` afterward, so don’t rely on that file for history.
 - Web UI: `uvicorn src.web.app:app --reload` serves the API and any built static assets. For live frontend work run `npm install` once then `npm run dev` (proxies to `http://localhost:8000`); ship builds with `npm run build`.

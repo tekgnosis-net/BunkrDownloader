@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import {
   Badge,
@@ -125,6 +125,7 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [jobError, setJobError] = useState(null);
+  const [appVersion, setAppVersion] = useState("dev");
   const wsRef = useRef(null);
   const pollRef = useRef(null);
   const reconnectRef = useRef(null);
@@ -288,8 +289,20 @@ function App() {
     }
   };
 
+  const fetchMeta = useCallback(async () => {
+    try {
+      const { data } = await api.get("/meta");
+      if (data?.version) {
+        setAppVersion(String(data.version));
+      }
+    } catch (error) {
+      console.warn("Failed to load application metadata", error);
+    }
+  }, []);
+
   useEffect(() => {
     handleDirectories();
+    fetchMeta();
     return () => {
       stopPolling();
       clearReconnect();
@@ -297,7 +310,7 @@ function App() {
         wsRef.current.close();
       }
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fetchMeta]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -540,6 +553,11 @@ function App() {
             >
               Source
             </Button>
+          </Tooltip>
+          <Tooltip label="Running image version" hasArrow>
+            <Text fontSize="sm" color="gray.300">
+              Version: {appVersion}
+            </Text>
           </Tooltip>
           <Spacer />
           <Tooltip label="Current job status" hasArrow>

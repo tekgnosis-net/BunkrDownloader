@@ -33,10 +33,10 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 ```bash
 cd BunkrDownloader
 cp .env.sample .env                     # customise API_PORT, DOWNLOADS_DIR, etc.
-docker compose pull                     # grabs ghcr.io/tekgnosis-net/bunkrdownloader:latest
+docker compose pull                     # grabs ghcr.io/tekgnosis-net/bunkrdownloader:${IMAGE_TAG:-latest}
 docker compose up -d                    # start the FastAPI + web UI stack
 ```
-By default the service listens on `http://localhost:8000`. Override the port or downloads path by editing `.env` (or exporting `API_PORT` / `DOWNLOADS_DIR` before `docker compose up`). Use `docker compose logs -f bunkr` to watch progress and `docker compose down` when you're finished.
+By default the service listens on `http://localhost:8000`. Override the port or downloads path by editing `.env` (or exporting `API_PORT` / `DOWNLOADS_DIR` before `docker compose up`). Set `IMAGE_TAG` to a published semantic version (for example `1.2.3`) if you want to pin a specific release; otherwise `latest` is used. Use `docker compose logs -f bunkr` to watch progress and `docker compose down` when you're finished.
 
 ### Local runtime
 ```bash
@@ -70,6 +70,7 @@ python3 main.py [shared flags]
 - **Live log** – chronological events, retries, and skips with full timestamps.
 - **Resilient updates** – when a WebSocket drops (e.g. container restart) the UI polls `/api/downloads/{job}/events` until the socket reconnects.
 - **Source shortcut** – in-app link to the GitHub repository for quick reference.
+- **Version badge** – header shows the semantic version embedded in the running container image.
 
 ## Configuration
 - `.env` (tracked example) controls container defaults: `API_HOST`, `API_PORT`, `DOWNLOADS_DIR`, plus Vite proxy hints (`VITE_*`).
@@ -92,7 +93,9 @@ python3 main.py [shared flags]
 
 ## Automation
 - `.github/workflows/docker.yml` builds and pushes a multi-platform image (`linux/amd64`, `linux/arm64`) to GitHub Container Registry on every push to `main`.
+- `.github/workflows/semantic-release.yml` promotes commits merged into `main` using [python-semantic-release](https://python-semantic-release.readthedocs.io/en/latest/) to create Git tags, changelog entries, and GitHub releases.
 - Images publish under `ghcr.io/tekgnosis-net/bunkrdownloader:latest` and `:sha`. Authenticate with `ghcr.io` using a PAT or `docker login ghcr.io -u <user> -p <token>`.
+  - Version tags matching the generated semantic version (for example `ghcr.io/tekgnosis-net/bunkrdownloader:1.2.3`) are published alongside `latest`.
 
 ## Forked credits
 This project is a fork of [Lysagxra/BunkrDownloader](https://github.com/Lysagxra/BunkrDownloader). However, it has been modified for a web dashboard interface and other enhancements such as dockerizing the application.

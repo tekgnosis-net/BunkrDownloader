@@ -8,9 +8,11 @@ COPY frontend ./
 RUN npm run build
 
 FROM python:3.11-slim AS runtime
+ARG APP_VERSION=dev
 WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+	PYTHONUNBUFFERED=1 \
+	APP_VERSION=${APP_VERSION}
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

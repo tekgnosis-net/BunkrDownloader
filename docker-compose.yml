@@ -1,6 +1,7 @@
 services:
   bunkr:
-    image: ghcr.io/tekgnosis-net/bunkrdownloader:latest
+    image: ghcr.io/tekgnosis-net/bunkrdownloader:${IMAGE_TAG:-latest}
+    container_name: bunkr
     pull_policy: always
     ports:
       - "${API_PORT:-8000}:8000"

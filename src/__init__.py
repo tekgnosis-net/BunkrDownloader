@@ -22,4 +22,7 @@ __all__ = [
     "file_utils",
     "general_utils",
     "url_utils",
+    "__version__",
 ]
+
+__version__ = "0.1.0"

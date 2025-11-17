@@ -1,7 +1,10 @@
+"""FastAPI entrypoint that mirrors the CLI downloader for the web dashboard."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from argparse import Namespace
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -18,6 +21,8 @@ from pydantic import BaseModel, Field, AnyHttpUrl
 
 from downloader import validate_and_download
 from src.bunkr_utils import get_bunkr_status
+
+APP_VERSION = os.getenv("APP_VERSION", "dev")
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +47,14 @@ class DownloadRequest(BaseModel):
 
 
 class DownloadResponse(BaseModel):
+    """Identifier returned after a job has been scheduled."""
+
     job_id: str
 
 
 class JobInfo(BaseModel):
+    """Serializable representation of a tracked job."""
+
     job_id: str
     status: str
     created_at: datetime
@@ -54,6 +63,8 @@ class JobInfo(BaseModel):
 
 
 class JobStatus(str, Enum):
+    """Lifecycle states representing the status of a download job."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -70,9 +81,13 @@ class JobEventBroker:
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop:
+        """Return the asyncio event loop backing the broker."""
+
         return self._loop
 
     def _broadcast(self, event: dict[str, Any]) -> None:
+        """Send an event to all subscribers and retain it for future replays."""
+
         self._events.append(event)
         for queue in list(self._subscribers):
             queue.put_nowait(event)
@@ -110,10 +125,12 @@ class JobEventBroker:
             self._subscribers.discard(queue)
 
 
-class WebLiveManager:
+class WebLiveManager:  # pylint: disable=too-many-instance-attributes
     """Adapter that mirrors the CLI LiveManager API for the web frontend."""
 
     def __init__(self, broker: JobEventBroker) -> None:
+        """Initialise the manager with an event broker used for notifications."""
+
         self._broker = broker
         self._loop = broker.loop
         self.live = nullcontext()
@@ -125,6 +142,8 @@ class WebLiveManager:
         self.update_log(event="Script started", details="The script has started execution.")
 
     def add_overall_task(self, description: str, num_tasks: int) -> None:
+        """Publish an overall task describing the total work units expected."""
+
         def _impl() -> None:
             self._overall.update({
                 "description": description,
@@ -141,6 +160,8 @@ class WebLiveManager:
         self._run_in_loop(_impl)
 
     def add_task(self, current_task: int = 0, total: int = 100) -> int:
+        """Create and register a new task, returning its identifier."""
+
         label_total = self._overall["total"] or total
         task_id = self._next_task_id
         self._next_task_id += 1
@@ -163,6 +184,8 @@ class WebLiveManager:
         *,
         visible: bool = True,
     ) -> None:
+        """Update an existing task's completion percentage and visibility."""
+
         def _impl() -> None:
             task = self._tasks.get(task_id)
             if task is None:
@@ -194,6 +217,8 @@ class WebLiveManager:
         self._run_in_loop(_impl)
 
     def update_log(self, *, event: str, details: str) -> None:
+        """Append a log entry to the job timeline and broadcast it."""
+
         timestamp = datetime.now(timezone.utc).isoformat()
         payload = {
             "type": "log",
@@ -207,6 +232,8 @@ class WebLiveManager:
         """Start hook kept for compatibility."""
 
     def stop(self) -> None:
+        """Emit the closing log, including elapsed time, for the job."""
+
         def _impl() -> None:
             duration = datetime.now(timezone.utc) - self._started_at
             self._broker.publish({
@@ -222,6 +249,8 @@ class WebLiveManager:
         self._run_in_loop(_impl)
 
     def _task_payload(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Normalise the internal task dictionary for outgoing events."""
+
         return {
             "id": task["id"],
             "label": task["label"],
@@ -230,6 +259,8 @@ class WebLiveManager:
         }
 
     def _run_in_loop(self, callback: Callable[..., None], *args: Any) -> None:
+        """Execute a callback in the manager loop, deferring if on another thread."""
+
         try:
             running_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -242,7 +273,9 @@ class WebLiveManager:
 
 
 @dataclass(slots=True)
-class Job:
+class Job:  # pylint: disable=too-many-instance-attributes
+    """Tracked download job with runtime metadata and async task handles."""
+
     job_id: str
     request: DownloadRequest
     status: JobStatus = JobStatus.PENDING
@@ -257,6 +290,8 @@ class Job:
             self.manager = WebLiveManager(self.event_broker)
 
     def as_dict(self) -> dict[str, Any]:
+        """Return serialisable job data for API responses."""
+
         return {
             "job_id": self.job_id,
             "status": self.status.value,
@@ -274,13 +309,19 @@ class JobStore:
         self._lock = asyncio.Lock()
 
     async def add(self, job: Job) -> None:
+        """Store a job entry, ensuring writes happen sequentially."""
+
         async with self._lock:
             self._jobs[job.job_id] = job
 
     def get(self, job_id: str) -> Job | None:
+        """Fetch a job by identifier, returning None when missing."""
+
         return self._jobs.get(job_id)
 
     def list_jobs(self) -> list[Job]:
+        """Return a snapshot of all jobs currently tracked."""
+
         return list(self._jobs.values())
 
 
@@ -288,6 +329,8 @@ job_store = JobStore()
 
 
 def _status_event(status: JobStatus, message: str | None = None) -> dict[str, Any]:
+    """Construct a status event payload for subscribers."""
+
     payload = {
         "type": "status",
         "status": status.value,
@@ -299,6 +342,8 @@ def _status_event(status: JobStatus, message: str | None = None) -> dict[str, An
 
 
 def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
+    """Build a CLI-like namespace from an incoming HTTP download request."""
+
     include = request.include or None
     ignore = request.ignore or None
     return Namespace(
@@ -312,6 +357,8 @@ def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
 
 
 async def _run_download_job(job: Job) -> None:
+    """Execute the download flow while emitting updates through the live manager."""
+
     assert job.manager is not None
     manager = job.manager
 
@@ -333,7 +380,7 @@ async def _run_download_job(job: Job) -> None:
         job.status = JobStatus.COMPLETED
         job.event_broker.publish(_status_event(JobStatus.COMPLETED))
 
-    except Exception as exc:  # noqa: BLE001 propagate a structured error to the UI
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.exception("Download job %s failed", job.job_id)
         job.status = JobStatus.FAILED
         job.error = str(exc)
@@ -342,7 +389,7 @@ async def _run_download_job(job: Job) -> None:
         job.event_broker.publish(_status_event(JobStatus.FAILED, str(exc)))
 
 
-app = FastAPI(title="BunkrDownloader API", version="0.1.0")
+app = FastAPI(title="BunkrDownloader API", version=APP_VERSION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -354,6 +401,8 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def ensure_frontend() -> None:
+    """Mount the compiled frontend bundle if available."""
+
     dist_path = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
     if dist_path.exists():
         app.mount("/", StaticFiles(directory=dist_path, html=True), name="frontend")
@@ -361,6 +410,8 @@ async def ensure_frontend() -> None:
 
 @app.post("/api/downloads", response_model=DownloadResponse)
 async def start_download(request: DownloadRequest) -> DownloadResponse:
+    """Schedule a new download job and return its identifier."""
+
     job = Job(job_id=uuid4().hex, request=request)
     await job_store.add(job)
     job.event_broker.publish(_status_event(JobStatus.PENDING))
@@ -370,11 +421,15 @@ async def start_download(request: DownloadRequest) -> DownloadResponse:
 
 @app.get("/api/downloads", response_model=list[JobInfo])
 async def list_downloads() -> list[JobInfo]:
+    """Return metadata for each tracked download job."""
+
     return [JobInfo(**job.as_dict()) for job in job_store.list_jobs()]
 
 
 @app.get("/api/downloads/{job_id}", response_model=JobInfo)
 async def get_download(job_id: str) -> JobInfo:
+    """Return the current state of a job by identifier."""
+
     job = job_store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -383,6 +438,8 @@ async def get_download(job_id: str) -> JobInfo:
 
 @app.get("/api/downloads/{job_id}/events")
 async def get_download_events(job_id: str, since: int = Query(0, ge=0)) -> dict[str, Any]:
+    """Fetch buffered events for a job starting at the requested index."""
+
     job = job_store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -394,6 +451,8 @@ async def get_download_events(job_id: str, since: int = Query(0, ge=0)) -> dict[
 
 @app.get("/api/directories")
 async def list_directories(base_path: str | None = Query(None, alias="basePath")) -> dict[str, Any]:
+    """Return up to fifty sub-directories for the requested path."""
+
     path = Path(base_path).expanduser() if base_path else Path.cwd()
     try:
         resolved = path.resolve()
@@ -415,6 +474,8 @@ async def list_directories(base_path: str | None = Query(None, alias="basePath")
 
 @app.websocket("/ws/jobs/{job_id}")
 async def job_updates(websocket: WebSocket, job_id: str) -> None:
+    """Stream job updates to the caller via WebSocket."""
+
     job = job_store.get(job_id)
     if job is None:
         await websocket.close(code=4404)
@@ -427,3 +488,15 @@ async def job_updates(websocket: WebSocket, job_id: str) -> None:
     except WebSocketDisconnect:
         return
 
+
+class MetaResponse(BaseModel):
+    """Response describing runtime metadata such as version information."""
+
+    version: str
+
+
+@app.get("/api/meta", response_model=MetaResponse)
+async def read_meta() -> MetaResponse:
+    """Expose runtime metadata for the frontend shell."""
+
+    return MetaResponse(version=APP_VERSION)
