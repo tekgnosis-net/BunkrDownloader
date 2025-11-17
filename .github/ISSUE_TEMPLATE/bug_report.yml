@@ -2,7 +2,6 @@ name: Bug report
 description: File a bug report
 title: "[BUG] <Enter a bug description here>"
 labels: [ "bug" ]
-assignees: [ tekgnosis-net ]
 
 body:
   - id: thank-you

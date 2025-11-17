@@ -2,7 +2,6 @@ name: Feature request
 description: Suggest an idea for this project
 title: "[FEATURE] <Enter a title for your feature here>"
 labels: [ "enhancement" ]
-assignees: [ tekgnosis-net ]
 
 body:
   - id: thank-you

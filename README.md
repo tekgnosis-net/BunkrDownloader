@@ -102,7 +102,7 @@ python3 main.py [shared flags]
 - Open a new issue from the repository’s **Issues → New issue** page; choose the **Bug report** template for defects or the **Feature request** template for enhancements.
 - The templates collect environment details (OS, Python version, tool version) and walk you through logs, reproduction steps, and desired outcomes so maintainers can triage quickly.
 - Always confirm you’re running the latest release from [GitHub Releases](https://github.com/tekgnosis-net/BunkrDownloader/releases) and search for duplicates before filing.
-- If none of the templates fit, click **Open a blank issue** is disabled; instead, adapt one of the provided forms and note any extra context in the “Additional context” field.
+- Blank issues are disabled, so pick the template that’s closest to your situation and use the “Additional context” field to capture anything extra.
 
 ## Forked credits
 This project is a fork of [Lysagxra/BunkrDownloader](https://github.com/Lysagxra/BunkrDownloader). However, it has been modified for a web dashboard interface and other enhancements such as dockerizing the application.
