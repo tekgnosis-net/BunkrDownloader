@@ -162,6 +162,7 @@ frontend/.DS_Store
 
 # Downloads output
 Downloads/
+logs/
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

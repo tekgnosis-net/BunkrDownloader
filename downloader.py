@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import logging
 from typing import TYPE_CHECKING
 
 from requests.exceptions import ConnectionError as RequestConnectionError
@@ -19,6 +20,7 @@ from src.config import (
     AlbumInfo,
     DownloadInfo,
     SessionInfo,
+    MAX_WORKERS,
     parse_arguments,
 )
 from src.crawlers.crawler_utils import (
@@ -55,10 +57,19 @@ async def handle_download_process(
     url: str,
     initial_soup: BeautifulSoup,
     live_manager: LiveManager,
+    *,
+    max_workers: int = MAX_WORKERS,
+    log_level: str = "info",
 ) -> None:
     """Handle the download process for a Bunkr album or a single item."""
     host_page = get_host_page(url)
     identifier = get_identifier(url, soup=initial_soup)
+
+    if log_level.lower() == "debug":
+        live_manager.update_log(
+            event="Debug",
+            details=f"Resolved identifier {identifier} for {url}",
+        )
 
     # Album download
     if check_url_type(url):
@@ -68,7 +79,7 @@ async def handle_download_process(
             album_info=AlbumInfo(album_id=identifier, item_pages=item_pages),
             live_manager=live_manager,
         )
-        await album_downloader.download_album()
+        await album_downloader.download_album(max_workers=max_workers)
 
     # Single item download
     else:
@@ -95,9 +106,17 @@ async def validate_and_download(
     args: Namespace | None = None,
 ) -> None:
     """Validate the provided URL, and initiate the download process."""
+    log_level = getattr(args, "log_level", "info") if args else "info"
+    logging.getLogger().setLevel(log_level.upper())
+
     # Check the available disk space on the download path before starting the download
-    if not args.disable_disk_check:
+    if args and not args.disable_disk_check:
         check_disk_space(live_manager, custom_path=args.custom_path)
+    elif args and args.disable_disk_check and log_level.lower() == "debug":
+        live_manager.update_log(
+            event="Debug",
+            details="Disk space check skipped by configuration",
+        )
 
     soup = await fetch_page(url)
     album_id = get_album_id(url) if check_url_type(url) else None
@@ -114,8 +133,30 @@ async def validate_and_download(
         download_path=download_path,
     )
 
+    if log_level.lower() == "debug":
+        live_manager.update_log(
+            event="Debug",
+            details=(
+                f"Prepared session for '{album_name or 'single file'}'"
+                f" at {download_path}"
+            ),
+        )
+
     try:
-        await handle_download_process(session_info, url, soup, live_manager)
+        max_workers = getattr(args, "max_workers", MAX_WORKERS) if args else MAX_WORKERS
+        if log_level.lower() == "debug":
+            live_manager.update_log(
+                event="Debug",
+                details=f"Using {max_workers} concurrent worker(s) for album downloads",
+            )
+        await handle_download_process(
+            session_info,
+            url,
+            soup,
+            live_manager,
+            max_workers=max_workers,
+            log_level=log_level,
+        )
 
     except (RequestConnectionError, Timeout, RequestException) as err:
         error_message = f"Error downloading from {url}: {err}"

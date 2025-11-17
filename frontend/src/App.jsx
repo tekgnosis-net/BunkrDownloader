@@ -31,10 +31,23 @@ import {
   Text,
   Textarea,
   Tooltip,
+  Tabs,
+  TabList,
+  Tab,
+  TabPanels,
+  TabPanel,
+  Select,
+  Slider,
+  SliderTrack,
+  SliderFilledTrack,
+  SliderThumb,
   useDisclosure,
+  useColorMode,
+  useColorModeValue,
   useToast
 } from "@chakra-ui/react";
-import { ExternalLinkIcon, RepeatIcon } from "@chakra-ui/icons";
+import { RepeatIcon, MoonIcon, SunIcon } from "@chakra-ui/icons";
+import { FaGithub } from "react-icons/fa";
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const WS_BASE = import.meta.env.VITE_WS_BASE_URL ?? null;
 
@@ -62,8 +75,17 @@ const deriveWsUrl = (jobId) => {
   return `${wsProtocol}://${host}/ws/jobs/${jobId}`;
 };
 
-const maxLogEntries = 200;
+const DEFAULT_LOG_RETENTION = 200;
 const FORM_STORAGE_KEY = "bunkrdownloader:form";
+const SETTINGS_STORAGE_KEY = "bunkrdownloader:settings";
+const DEFAULT_SETTINGS = {
+  logLevel: "info",
+  logRetention: DEFAULT_LOG_RETENTION,
+  maxWorkers: 3,
+  autoScrollLogs: true
+};
+const LOG_RETENTION_RANGE = { min: 100, max: 1000, step: 50 };
+const MAX_WORKERS_RANGE = { min: 1, max: 8 };
 
 const normalisePath = (path) =>
   path
@@ -126,13 +148,42 @@ function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [jobError, setJobError] = useState(null);
   const [appVersion, setAppVersion] = useState("dev");
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const wsRef = useRef(null);
   const pollRef = useRef(null);
   const reconnectRef = useRef(null);
   const eventIndexRef = useRef(0);
   const jobIdRef = useRef(null);
   const jobStatusRef = useRef("idle");
+  const settingsRef = useRef(DEFAULT_SETTINGS);
+  const logRetentionRef = useRef(DEFAULT_SETTINGS.logRetention);
+  const logsContainerRef = useRef(null);
   const toast = useToast();
+  const { colorMode, toggleColorMode } = useColorMode();
+  const cardBg = useColorModeValue("white", "gray.800");
+  const subtleBg = useColorModeValue("gray.100", "gray.700");
+  const borderColor = useColorModeValue("gray.200", "gray.700");
+  const mutedText = useColorModeValue("gray.600", "gray.400");
+  const badgeBg = useColorModeValue("gray.200", "gray.700");
+  const badgeTextColor = useColorModeValue("gray.800", "gray.100");
+  const logBg = useColorModeValue("gray.50", "gray.900");
+
+  const pushLogEntry = useCallback((entry) => {
+    setLogs((prev) => {
+      const next = [...prev, entry];
+      return next.slice(-logRetentionRef.current);
+    });
+  }, []);
+
+  const appendLogEntry = useCallback((event, details, origin = "client") => {
+    pushLogEntry({
+      type: "log",
+      event,
+      details,
+      timestamp: new Date().toISOString(),
+      origin,
+    });
+  }, [pushLogEntry]);
 
   const allTasks = useMemo(() => Object.values(tasks), [tasks]);
 
@@ -341,6 +392,53 @@ function App() {
     }
   }, [form]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      const stored = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+      if (!stored) {
+        return;
+      }
+      const parsed = JSON.parse(stored);
+      if (parsed && typeof parsed === "object") {
+        setSettings((prev) => ({ ...prev, ...parsed }));
+      }
+    } catch (error) {
+      console.warn("Failed to restore settings state", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    } catch (error) {
+      console.warn("Failed to persist settings state", error);
+    }
+  }, [settings]);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
+  useEffect(() => {
+    logRetentionRef.current = settings.logRetention;
+  }, [settings.logRetention]);
+
+  useEffect(() => {
+    if (!settings.autoScrollLogs || !logsContainerRef.current) {
+      return;
+    }
+    logsContainerRef.current.scrollTo({
+      top: logsContainerRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [logs, settings.autoScrollLogs]);
+
   const resetJobState = () => {
     stopPolling();
     clearReconnect();
@@ -360,6 +458,7 @@ function App() {
   };
 
   const handleEvent = (event) => {
+    const { logLevel } = settingsRef.current;
     switch (event.type) {
       case "status":
         setJobStatus(event.status);
@@ -378,6 +477,13 @@ function App() {
           setOverall(null);
           setTasks({});
         }
+        if (logLevel === "debug") {
+          appendLogEntry(
+            "Debug",
+            `Job status changed to ${event.status.toUpperCase()}`,
+            "status"
+          );
+        }
         break;
       case "overall":
         setOverall({
@@ -385,6 +491,13 @@ function App() {
           completed: toFiniteNumber(event.completed),
           total: toFiniteNumber(event.total)
         });
+        if (logLevel === "debug") {
+          appendLogEntry(
+            "Debug",
+            `Overall progress ${event.completed}/${event.total}`,
+            "overall"
+          );
+        }
         break;
       case "task_created":
         if (isJobFinished()) {
@@ -399,6 +512,13 @@ function App() {
           };
           return { ...prev, [normalised.id]: normalised };
         });
+        if (logLevel === "debug") {
+          appendLogEntry(
+            "Debug",
+            `Task ${event.task.id} created (${event.task.label})`,
+            "task"
+          );
+        }
         break;
       case "task_updated":
         if (isJobFinished()) {
@@ -417,12 +537,16 @@ function App() {
           };
           return { ...prev, [normalised.id]: normalised };
         });
+        if (logLevel === "debug") {
+          appendLogEntry(
+            "Debug",
+            `Task ${event.task.id} updated to ${clampPercent(event.task.completed ?? 0)}%`,
+            "task"
+          );
+        }
         break;
       case "log":
-        setLogs((prev) => {
-          const next = [...prev, event];
-          return next.slice(-maxLogEntries);
-        });
+        pushLogEntry(event);
         break;
       default:
         break;
@@ -502,7 +626,9 @@ function App() {
         include: parseList(form.include),
         ignore: parseList(form.ignore),
         custom_path: form.customPath || null,
-        disable_disk_check: form.disableDiskCheck
+        disable_disk_check: form.disableDiskCheck,
+        log_level: settings.logLevel,
+        max_workers: settings.maxWorkers
       };
 
       const { data } = await api.post("/downloads", payload);
@@ -537,291 +663,415 @@ function App() {
   return (
     <Box w="100%" px={{ base: 4, md: 10, xl: 16 }} py={8}>
       <Stack spacing={8} w="100%">
-        <Flex align="center" gap={4} wrap="wrap">
+        <Flex align="center" gap={3} wrap="wrap">
           <Tooltip label="Web controls for BunkrDownloader" hasArrow>
             <Heading size="lg">Bunkr Downloader</Heading>
           </Tooltip>
-          <Tooltip label="View the GitHub source" hasArrow>
-            <Button
-              as={Link}
-              href="https://github.com/tekgnosis-net/BunkrDownloader"
-              target="_blank"
-              rel="noopener noreferrer"
-              rightIcon={<ExternalLinkIcon />}
-              size="sm"
-              colorScheme="teal"
-            >
-              Source
-            </Button>
-          </Tooltip>
           <Tooltip label="Running image version" hasArrow>
-            <Text fontSize="sm" color="gray.300">
-              Version: {appVersion}
-            </Text>
-          </Tooltip>
-          <Spacer />
-          <Tooltip label="Current job status" hasArrow>
-            <Badge colorScheme={jobStatus === "failed" ? "red" : jobStatus === "completed" ? "green" : "blue"}>
-              {jobStatus.toUpperCase()}
+            <Badge variant="subtle" bg={badgeBg} color={badgeTextColor}>
+              v{appVersion}
             </Badge>
           </Tooltip>
+          <Spacer />
+          <HStack spacing={2} align="center">
+            <Tooltip label="Current job status" hasArrow>
+              <Badge colorScheme={jobStatus === "failed" ? "red" : jobStatus === "completed" ? "green" : "blue"}>
+                {jobStatus.toUpperCase()}
+              </Badge>
+            </Tooltip>
+            <Tooltip label={`Switch to ${colorMode === "dark" ? "light" : "dark"} theme`} hasArrow>
+              <IconButton
+                icon={colorMode === "dark" ? <SunIcon /> : <MoonIcon />}
+                aria-label="Toggle color mode"
+                onClick={toggleColorMode}
+                variant="ghost"
+              />
+            </Tooltip>
+            <Tooltip label="View the GitHub source" hasArrow>
+              <IconButton
+                as={Link}
+                href="https://github.com/tekgnosis-net/BunkrDownloader"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Open GitHub repository"
+                icon={<FaGithub />}
+                variant="ghost"
+              />
+            </Tooltip>
+          </HStack>
         </Flex>
 
-        <Box as="form" onSubmit={handleSubmit} p={6} bg="gray.800" rounded="md" shadow="md" w="100%">
-          <Stack spacing={6} w="100%">
-            <FormControl isRequired w="100%" display="flex" flexDirection="column">
-              <FormLabel>Bunkr URLs</FormLabel>
-              <Tooltip label="Paste one album or file URL per line" hasArrow placement="top-start" shouldWrapChildren>
-                <Textarea
-                  width="100%"
-                  minW="100%"
-                  flexGrow={1}
-                  placeholder="One URL per line"
-                  minH="160px"
-                  value={form.urls}
-                  onChange={(e) => setForm((prev) => ({ ...prev, urls: e.target.value }))}
-                  fontFamily="mono"
-                  resize="vertical"
-                />
-              </Tooltip>
-            </FormControl>
-
-            <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={6} w="100%">
-              <FormControl w="100%" display="flex" flexDirection="column">
-                <FormLabel>Include filters</FormLabel>
-                <Tooltip label="Only download files containing these terms" hasArrow placement="top-start" shouldWrapChildren>
-                  <Textarea
-                    width="100%"
-                    minW="100%"
-                    placeholder="Keywords to include"
-                    value={form.include}
-                    onChange={(e) => setForm((prev) => ({ ...prev, include: e.target.value }))}
-                    minH="120px"
-                    resize="vertical"
-                    flexGrow={1}
-                  />
-                </Tooltip>
-              </FormControl>
-              <FormControl w="100%" display="flex" flexDirection="column">
-                <FormLabel>Ignore filters</FormLabel>
-                <Tooltip label="Skip files matching any of these terms" hasArrow placement="top-start" shouldWrapChildren>
-                  <Textarea
-                    width="100%"
-                    minW="100%"
-                    placeholder="Keywords to skip"
-                    value={form.ignore}
-                    onChange={(e) => setForm((prev) => ({ ...prev, ignore: e.target.value }))}
-                    minH="120px"
-                    resize="vertical"
-                    flexGrow={1}
-                  />
-                </Tooltip>
-              </FormControl>
-            </SimpleGrid>
-
-            <Stack spacing={3}>
-              <FormControl w="100%">
-                <FormLabel>Custom download directory</FormLabel>
-                <Stack
-                  direction={{ base: "column", lg: "row" }}
-                  spacing={3}
-                  align={{ base: "stretch", lg: "center" }}
+        <Tabs variant="enclosed" colorScheme="blue">
+          <TabList>
+            <Tab>Download</Tab>
+            <Tab>Settings</Tab>
+          </TabList>
+          <TabPanels>
+            <TabPanel px={0}>
+              <Stack spacing={8}>
+                <Box
+                  as="form"
+                  onSubmit={handleSubmit}
+                  p={6}
+                  bg={cardBg}
+                  borderWidth={1}
+                  borderColor={borderColor}
+                  rounded="md"
+                  shadow="md"
+                  w="100%"
                 >
-                  <Tooltip label="Override the download root directory" hasArrow placement="top-start" shouldWrapChildren>
-                    <Input
-                      placeholder="Defaults to ./Downloads"
-                      value={form.customPath}
-                      onChange={(e) => setForm((prev) => ({ ...prev, customPath: e.target.value }))}
-                      flex="1"
-                      minW={{ lg: "0" }}
-                    />
-                  </Tooltip>
-                  <Stack direction={{ base: "column", sm: "row" }} spacing={2} w={{ base: "full", lg: "auto" }}>
-                    <Tooltip label="Select a directory from the server" hasArrow shouldWrapChildren>
-                      <Button w={{ base: "full", sm: "auto" }} onClick={openDirectoryPicker}>
-                        Pick directory
-                      </Button>
-                    </Tooltip>
-                    <Tooltip label="Refresh the current directory list" hasArrow>
-                      <IconButton
-                        icon={<RepeatIcon />}
-                        aria-label="Refresh directories"
-                        onClick={() => handleDirectories(form.customPath || directories.path || undefined)}
-                        isLoading={loadingDirectories}
-                        isDisabled={loadingDirectories}
-                      />
-                    </Tooltip>
-                  </Stack>
-                </Stack>
-              </FormControl>
-            </Stack>
+                  <Stack spacing={6} w="100%">
+                    <FormControl isRequired w="100%" display="flex" flexDirection="column">
+                      <FormLabel>Bunkr URLs</FormLabel>
+                      <Tooltip label="Paste one album or file URL per line" hasArrow placement="top-start" shouldWrapChildren>
+                        <Textarea
+                          width="100%"
+                          minW="100%"
+                          flexGrow={1}
+                          placeholder="One URL per line"
+                          minH="160px"
+                          value={form.urls}
+                          onChange={(e) => setForm((prev) => ({ ...prev, urls: e.target.value }))}
+                          fontFamily="mono"
+                          resize="vertical"
+                        />
+                      </Tooltip>
+                    </FormControl>
 
-            <Modal isOpen={directoryPicker.isOpen} onClose={directoryPicker.onClose} size="xl" isCentered>
-              <ModalOverlay />
-              <ModalContent bg="gray.900" borderColor="gray.700">
-                <ModalHeader borderBottomWidth="1px" borderColor="gray.700">
-                  Choose download directory
-                </ModalHeader>
-                <ModalCloseButton />
-                <ModalBody px={6} py={4}>
-                  <Stack spacing={4}>
-                    <Text fontSize="sm" color="gray.400">
-                      Current path: {directories.path || "Loading..."}
-                    </Text>
-                    {loadingDirectories ? (
-                      <Flex justify="center" py={6}>
-                        <Spinner />
-                      </Flex>
-                    ) : (
-                      <List spacing={1} maxH="320px" overflowY="auto" fontSize="sm">
-                        {directories.entries.map((entry) => (
-                          <ListItem key={entry}>
+                    <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={6} w="100%">
+                      <FormControl w="100%" display="flex" flexDirection="column">
+                        <FormLabel>Include filters</FormLabel>
+                        <Tooltip label="Only download files containing these terms" hasArrow placement="top-start" shouldWrapChildren>
+                          <Textarea
+                            width="100%"
+                            minW="100%"
+                            placeholder="Keywords to include"
+                            value={form.include}
+                            onChange={(e) => setForm((prev) => ({ ...prev, include: e.target.value }))}
+                            minH="120px"
+                            resize="vertical"
+                            flexGrow={1}
+                          />
+                        </Tooltip>
+                      </FormControl>
+                      <FormControl w="100%" display="flex" flexDirection="column">
+                        <FormLabel>Ignore filters</FormLabel>
+                        <Tooltip label="Skip files matching any of these terms" hasArrow placement="top-start" shouldWrapChildren>
+                          <Textarea
+                            width="100%"
+                            minW="100%"
+                            placeholder="Keywords to skip"
+                            value={form.ignore}
+                            onChange={(e) => setForm((prev) => ({ ...prev, ignore: e.target.value }))}
+                            minH="120px"
+                            resize="vertical"
+                            flexGrow={1}
+                          />
+                        </Tooltip>
+                      </FormControl>
+                    </SimpleGrid>
+
+                    <Stack spacing={3}>
+                      <FormControl w="100%">
+                        <FormLabel>Custom download directory</FormLabel>
+                        <Stack
+                          direction={{ base: "column", lg: "row" }}
+                          spacing={3}
+                          align={{ base: "stretch", lg: "center" }}
+                        >
+                          <Tooltip label="Override the download root directory" hasArrow placement="top-start" shouldWrapChildren>
+                            <Input
+                              placeholder="Defaults to ./Downloads"
+                              value={form.customPath}
+                              onChange={(e) => setForm((prev) => ({ ...prev, customPath: e.target.value }))}
+                              flex="1"
+                              minW={{ lg: "0" }}
+                            />
+                          </Tooltip>
+                          <Stack direction={{ base: "column", sm: "row" }} spacing={2} w={{ base: "full", lg: "auto" }}>
+                            <Tooltip label="Select a directory from the server" hasArrow shouldWrapChildren>
+                              <Button w={{ base: "full", sm: "auto" }} onClick={openDirectoryPicker}>
+                                Pick directory
+                              </Button>
+                            </Tooltip>
+                            <Tooltip label="Refresh the current directory list" hasArrow>
+                              <IconButton
+                                icon={<RepeatIcon />}
+                                aria-label="Refresh directories"
+                                onClick={() => handleDirectories(form.customPath || directories.path || undefined)}
+                                isLoading={loadingDirectories}
+                                isDisabled={loadingDirectories}
+                              />
+                            </Tooltip>
+                          </Stack>
+                        </Stack>
+                      </FormControl>
+                    </Stack>
+
+                    <Modal isOpen={directoryPicker.isOpen} onClose={directoryPicker.onClose} size="xl" isCentered>
+                      <ModalOverlay />
+                      <ModalContent bg={cardBg} borderWidth={1} borderColor={borderColor}>
+                        <ModalHeader borderBottomWidth="1px" borderColor={borderColor}>
+                          Choose download directory
+                        </ModalHeader>
+                        <ModalCloseButton />
+                        <ModalBody px={6} py={4}>
+                          <Stack spacing={4}>
+                            <Text fontSize="sm" color={mutedText}>
+                              Current path: {directories.path || "Loading..."}
+                            </Text>
+                            {loadingDirectories ? (
+                              <Flex justify="center" py={6}>
+                                <Spinner />
+                              </Flex>
+                            ) : (
+                              <List spacing={1} maxH="320px" overflowY="auto" fontSize="sm">
+                                {directories.entries.map((entry) => (
+                                  <ListItem key={entry}>
+                                    <Button
+                                      variant="ghost"
+                                      justifyContent="flex-start"
+                                      width="100%"
+                                      onClick={() => handleDirectories(entry, { silent: true })}
+                                      isDisabled={loadingDirectories}
+                                    >
+                                      {entry}
+                                    </Button>
+                                  </ListItem>
+                                ))}
+                                {!directories.entries.length && (
+                                  <ListItem color={mutedText}>No sub-directories found.</ListItem>
+                                )}
+                              </List>
+                            )}
+                          </Stack>
+                        </ModalBody>
+                        <ModalFooter borderTopWidth="1px" borderColor={borderColor}>
+                          <HStack w="100%" justify="space-between">
                             <Button
                               variant="ghost"
-                              justifyContent="flex-start"
-                              width="100%"
-                              onClick={() => handleDirectories(entry, { silent: true })}
-                              isDisabled={loadingDirectories}
+                              onClick={() => {
+                                const parent = getParentPath(directories.path);
+                                if (parent) {
+                                  handleDirectories(parent, { silent: true });
+                                }
+                              }}
+                              isDisabled={!getParentPath(directories.path) || loadingDirectories}
                             >
-                              {entry}
+                              Up one level
                             </Button>
-                          </ListItem>
+                            <HStack spacing={3}>
+                              <Button variant="ghost" onClick={directoryPicker.onClose}>
+                                Cancel
+                              </Button>
+                              <Button
+                                colorScheme="blue"
+                                onClick={() => {
+                                  if (directories.path) {
+                                    setForm((prev) => ({ ...prev, customPath: directories.path }));
+                                  }
+                                  directoryPicker.onClose();
+                                }}
+                                isDisabled={!directories.path}
+                              >
+                                Use this directory
+                              </Button>
+                            </HStack>
+                          </HStack>
+                        </ModalFooter>
+                      </ModalContent>
+                    </Modal>
+
+                    <FormControl display="flex" alignItems="center">
+                      <FormLabel htmlFor="disk-check" mb="0">
+                        Disable disk space check
+                      </FormLabel>
+                      <Tooltip label="Skip the free space guard (useful for remote volumes)" hasArrow shouldWrapChildren>
+                        <Switch
+                          id="disk-check"
+                          isChecked={form.disableDiskCheck}
+                          onChange={(e) => setForm((prev) => ({ ...prev, disableDiskCheck: e.target.checked }))}
+                        />
+                      </Tooltip>
+                    </FormControl>
+
+                    <Tooltip label="Start a new download job with the provided settings" hasArrow>
+                      <Button type="submit" colorScheme="blue" isLoading={isSubmitting || jobStatus === "running"}>
+                        Start download
+                      </Button>
+                    </Tooltip>
+                  </Stack>
+                </Box>
+
+                <Box p={6} bg={cardBg} borderWidth={1} borderColor={borderColor} rounded="md" shadow="md">
+                  <Stack spacing={4}>
+                    <Tooltip label="Live overview of the download job" hasArrow>
+                      <Heading size="md">Progress</Heading>
+                    </Tooltip>
+                    {derivedOverall ? (
+                      <Stack spacing={2}>
+                        <Tooltip label="Album or file identifier being processed" hasArrow>
+                          <Text fontWeight="semibold">{derivedOverall.description}</Text>
+                        </Tooltip>
+                        <Tooltip label="Overall completion across all items" hasArrow shouldWrapChildren>
+                          <Progress value={derivedOverall.percent} hasStripe isAnimated />
+                        </Tooltip>
+                        <Text fontSize="sm" color={mutedText}>
+                          {derivedOverall.completed}/{derivedOverall.total} completed
+                        </Text>
+                      </Stack>
+                    ) : (
+                      <Text fontSize="sm" color={mutedText}>
+                        Start a job to see progress.
+                      </Text>
+                    )}
+
+                    {!!activeTasks.length && (
+                      <Stack spacing={3}>
+                        {activeTasks.map((task) => (
+                          <Tooltip key={task.id} label="Per-file progress" hasArrow placement="top" shouldWrapChildren>
+                            <Box p={3} bg={subtleBg} rounded="md">
+                              <Text fontSize="sm" mb={2}>{task.label}</Text>
+                              <Progress value={clampPercent(task.completed)} size="sm" />
+                            </Box>
+                          </Tooltip>
                         ))}
-                        {!directories.entries.length && (
-                          <ListItem color="gray.500">No sub-directories found.</ListItem>
-                        )}
-                      </List>
+                      </Stack>
+                    )}
+
+                    {jobError && (
+                      <Text color="red.400" fontWeight="semibold">
+                        {jobError}
+                      </Text>
                     )}
                   </Stack>
-                </ModalBody>
-                <ModalFooter borderTopWidth="1px" borderColor="gray.700">
-                  <HStack w="100%" justify="space-between">
-                    <Button
-                      variant="ghost"
-                      onClick={() => {
-                        const parent = getParentPath(directories.path);
-                        if (parent) {
-                          handleDirectories(parent, { silent: true });
-                        }
-                      }}
-                      isDisabled={!getParentPath(directories.path) || loadingDirectories}
+                </Box>
+
+                <Box p={6} bg={cardBg} borderWidth={1} borderColor={borderColor} rounded="md" shadow="md">
+                  <Stack spacing={4}>
+                    <Tooltip label="Detailed timeline of actions" hasArrow>
+                      <Heading size="md">Log</Heading>
+                    </Tooltip>
+                    <Divider borderColor={borderColor} />
+                    <Stack
+                      ref={logsContainerRef}
+                      spacing={2}
+                      maxH="280px"
+                      overflowY="auto"
+                      fontFamily="mono"
+                      fontSize="sm"
+                      bg={logBg}
+                      p={3}
+                      rounded="md"
+                      borderWidth={1}
+                      borderColor={borderColor}
                     >
-                      Up one level
-                    </Button>
-                    <HStack spacing={3}>
-                      <Button variant="ghost" onClick={directoryPicker.onClose}>
-                        Cancel
-                      </Button>
-                      <Button
-                        colorScheme="blue"
-                        onClick={() => {
-                          if (directories.path) {
-                            setForm((prev) => ({ ...prev, customPath: directories.path }));
-                          }
-                          directoryPicker.onClose();
-                        }}
-                        isDisabled={!directories.path}
-                      >
-                        Use this directory
-                      </Button>
-                    </HStack>
-                  </HStack>
-                </ModalFooter>
-              </ModalContent>
-            </Modal>
-
-            <FormControl display="flex" alignItems="center">
-              <FormLabel htmlFor="disk-check" mb="0">
-                Disable disk space check
-              </FormLabel>
-              <Tooltip label="Skip the free space guard (useful for remote volumes)" hasArrow shouldWrapChildren>
-                <Switch
-                  id="disk-check"
-                  isChecked={form.disableDiskCheck}
-                  onChange={(e) => setForm((prev) => ({ ...prev, disableDiskCheck: e.target.checked }))}
-                />
-              </Tooltip>
-            </FormControl>
-
-            <Tooltip label="Start a new download job with the provided settings" hasArrow>
-              <Button type="submit" colorScheme="blue" isLoading={isSubmitting || jobStatus === "running"}>
-                Start download
-              </Button>
-            </Tooltip>
-          </Stack>
-        </Box>
-
-        <Box p={6} bg="gray.800" rounded="md" shadow="md">
-          <Stack spacing={4}>
-            <Tooltip label="Live overview of the download job" hasArrow>
-              <Heading size="md">Progress</Heading>
-            </Tooltip>
-            {derivedOverall ? (
-              <Stack spacing={2}>
-                <Tooltip label="Album or file identifier being processed" hasArrow>
-                  <Text fontWeight="semibold">{derivedOverall.description}</Text>
-                </Tooltip>
-                <Tooltip label="Overall completion across all items" hasArrow shouldWrapChildren>
-                  <Progress value={derivedOverall.percent} hasStripe isAnimated />
-                </Tooltip>
-                <Text fontSize="sm" color="gray.400">
-                  {derivedOverall.completed}/{derivedOverall.total} completed
-                </Text>
+                      {logs.map((logEntry) => (
+                        <Tooltip
+                          key={`${logEntry.timestamp}-${logEntry.event}-${logEntry.details}`}
+                          label={new Date(logEntry.timestamp).toLocaleString()}
+                          hasArrow
+                          placement="top-start"
+                          shouldWrapChildren
+                        >
+                          <Box>
+                            <Text color={mutedText}>
+                              [{new Date(logEntry.timestamp).toLocaleTimeString()}]
+                            </Text>
+                            <Text>
+                              <Text as="span" fontWeight="semibold">{logEntry.event}:</Text> {logEntry.details}
+                            </Text>
+                          </Box>
+                        </Tooltip>
+                      ))}
+                      {!logs.length && <Text color={mutedText}>Logs will appear here.</Text>}
+                    </Stack>
+                  </Stack>
+                </Box>
               </Stack>
-            ) : (
-              <Text fontSize="sm" color="gray.500">
-                Start a job to see progress.
-              </Text>
-            )}
+            </TabPanel>
 
-            {!!activeTasks.length && (
-              <Stack spacing={3}>
-                {activeTasks.map((task) => (
-                  <Tooltip key={task.id} label="Per-file progress" hasArrow placement="top" shouldWrapChildren>
-                    <Box p={3} bg="gray.700" rounded="md">
-                      <Text fontSize="sm" mb={2}>{task.label}</Text>
-                      <Progress value={clampPercent(task.completed)} size="sm" />
-                    </Box>
-                  </Tooltip>
-                ))}
-              </Stack>
-            )}
-
-            {jobError && (
-              <Text color="red.300" fontWeight="semibold">
-                {jobError}
-              </Text>
-            )}
-          </Stack>
-        </Box>
-
-        <Box p={6} bg="gray.800" rounded="md" shadow="md">
-          <Stack spacing={4}>
-            <Tooltip label="Detailed timeline of actions" hasArrow>
-              <Heading size="md">Log</Heading>
-            </Tooltip>
-            <Divider borderColor="gray.600" />
-            <Stack spacing={2} maxH="280px" overflowY="auto" fontFamily="mono" fontSize="sm">
-              {logs.map((logEntry) => (
-                <Tooltip
-                  key={`${logEntry.timestamp}-${logEntry.event}`}
-                  label={new Date(logEntry.timestamp).toLocaleString()}
-                  hasArrow
-                  placement="top-start"
-                  shouldWrapChildren
-                >
-                  <Box>
-                    <Text color="gray.500">[{new Date(logEntry.timestamp).toLocaleTimeString()}]</Text>
-                    <Text>
-                      <Text as="span" fontWeight="semibold">{logEntry.event}:</Text> {logEntry.details}
+            <TabPanel px={0}>
+              <Stack spacing={6}>
+                <Box bg={cardBg} borderWidth={1} borderColor={borderColor} rounded="md" shadow="md" p={6}>
+                  <Stack spacing={4}>
+                    <Heading size="md">Logging</Heading>
+                    <Text fontSize="sm" color={mutedText}>
+                      Tune log verbosity and retention to capture the details you need when reporting issues.
                     </Text>
-                  </Box>
-                </Tooltip>
-              ))}
-              {!logs.length && <Text color="gray.500">Logs will appear here.</Text>}
-            </Stack>
-          </Stack>
-        </Box>
+                    <FormControl>
+                      <FormLabel>Log level</FormLabel>
+                      <Select
+                        value={settings.logLevel}
+                        onChange={(e) => setSettings((prev) => ({ ...prev, logLevel: e.target.value }))}
+                      >
+                        <option value="debug">Debug</option>
+                        <option value="info">Info</option>
+                        <option value="warning">Warning</option>
+                        <option value="error">Error</option>
+                      </Select>
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>Log retention ({settings.logRetention} entries)</FormLabel>
+                      <Slider
+                        aria-label="log-retention"
+                        value={settings.logRetention}
+                        min={LOG_RETENTION_RANGE.min}
+                        max={LOG_RETENTION_RANGE.max}
+                        step={LOG_RETENTION_RANGE.step}
+                        onChange={(value) =>
+                          setSettings((prev) => ({ ...prev, logRetention: Math.round(value) }))
+                        }
+                      >
+                        <SliderTrack>
+                          <SliderFilledTrack />
+                        </SliderTrack>
+                        <SliderThumb boxSize={4} />
+                      </Slider>
+                    </FormControl>
+                    <FormControl display="flex" alignItems="center">
+                      <FormLabel htmlFor="auto-scroll" mb="0">
+                        Auto-scroll logs
+                      </FormLabel>
+                      <Switch
+                        id="auto-scroll"
+                        isChecked={settings.autoScrollLogs}
+                        onChange={(e) => setSettings((prev) => ({ ...prev, autoScrollLogs: e.target.checked }))}
+                      />
+                    </FormControl>
+                  </Stack>
+                </Box>
+
+                <Box bg={cardBg} borderWidth={1} borderColor={borderColor} rounded="md" shadow="md" p={6}>
+                  <Stack spacing={4}>
+                    <Heading size="md">Downloads</Heading>
+                    <Text fontSize="sm" color={mutedText}>
+                      Control how many files are fetched at once when downloading large albums.
+                    </Text>
+                    <FormControl>
+                      <FormLabel>Concurrent downloads ({settings.maxWorkers})</FormLabel>
+                      <Slider
+                        aria-label="max-workers"
+                        value={settings.maxWorkers}
+                        min={MAX_WORKERS_RANGE.min}
+                        max={MAX_WORKERS_RANGE.max}
+                        step={1}
+                        onChange={(value) =>
+                          setSettings((prev) => ({ ...prev, maxWorkers: Math.round(value) }))
+                        }
+                      >
+                        <SliderTrack>
+                          <SliderFilledTrack />
+                        </SliderTrack>
+                        <SliderThumb boxSize={4} />
+                      </Slider>
+                    </FormControl>
+                  </Stack>
+                </Box>
+              </Stack>
+            </TabPanel>
+          </TabPanels>
+        </Tabs>
       </Stack>
     </Box>
   );

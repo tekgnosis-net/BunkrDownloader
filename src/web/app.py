@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
@@ -20,9 +20,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, AnyHttpUrl
 
 from downloader import validate_and_download
+from src import __version__ as __app_version__
 from src.bunkr_utils import get_bunkr_status
+from src.config import MAX_WORKERS
 
-APP_VERSION = os.getenv("APP_VERSION", "dev")
+_env_version = os.getenv("APP_VERSION", "")
+if _env_version and _env_version.lower() != "latest":
+    APP_VERSION = _env_version
+else:
+    APP_VERSION = __app_version__
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,16 @@ class DownloadRequest(BaseModel):
     ignore: list[str] = Field(default_factory=list)
     custom_path: str | None = Field(default=None, description="Optional absolute base directory.")
     disable_disk_check: bool = Field(default=False, description="Skip the free disk space guard.")
+    log_level: Literal["debug", "info", "warning", "error"] = Field(
+        default="info",
+        description="Verbosity applied to runtime logs for this job.",
+    )
+    max_workers: int = Field(
+        default=MAX_WORKERS,
+        ge=1,
+        le=10,
+        description="Maximum concurrent album downloads to run.",
+    )
 
 
 class DownloadResponse(BaseModel):
@@ -128,7 +144,7 @@ class JobEventBroker:
 class WebLiveManager:  # pylint: disable=too-many-instance-attributes
     """Adapter that mirrors the CLI LiveManager API for the web frontend."""
 
-    def __init__(self, broker: JobEventBroker) -> None:
+    def __init__(self, broker: JobEventBroker, log_level: str = "info") -> None:
         """Initialise the manager with an event broker used for notifications."""
 
         self._broker = broker
@@ -138,8 +154,13 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
         self._overall = {"description": None, "total": 0, "completed": 0}
         self._tasks: dict[int, dict[str, Any]] = {}
         self._started_at = datetime.now(timezone.utc)
+        self._log_level = log_level.lower()
         # Mirror the CLI boot message so behaviour stays consistent.
         self.update_log(event="Script started", details="The script has started execution.")
+        self.update_log(
+            event="Log level",
+            details=f"Using {self._log_level.upper()} verbosity.",
+        )
 
     def add_overall_task(self, description: str, num_tasks: int) -> None:
         """Publish an overall task describing the total work units expected."""
@@ -228,6 +249,12 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
         }
         self._run_in_loop(self._broker.publish, payload)
 
+    def log_debug(self, *, event: str, details: str) -> None:
+        """Emit a log entry only when the current log level enables debug output."""
+
+        if self._log_level == "debug":
+            self.update_log(event=event, details=details)
+
     def start(self) -> None:  # noqa: D401 kept for API parity
         """Start hook kept for compatibility."""
 
@@ -287,7 +314,7 @@ class Job:  # pylint: disable=too-many-instance-attributes
 
     def __post_init__(self) -> None:
         if self.manager is None:
-            self.manager = WebLiveManager(self.event_broker)
+            self.manager = WebLiveManager(self.event_broker, log_level=self.request.log_level)
 
     def as_dict(self) -> dict[str, Any]:
         """Return serialisable job data for API responses."""
@@ -353,6 +380,8 @@ def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
         custom_path=request.custom_path,
         disable_ui=True,
         disable_disk_check=request.disable_disk_check,
+        log_level=request.log_level,
+        max_workers=request.max_workers,
     )
 
 
@@ -367,14 +396,20 @@ async def _run_download_job(job: Job) -> None:
 
     try:
         bunkr_status = await asyncio.to_thread(get_bunkr_status)
+        manager.log_debug(
+            event="Debug",
+            details=f"Fetched bunkr status for {len(bunkr_status)} hosts",
+        )
         for index, url in enumerate(job.request.urls, start=1):
             if len(job.request.urls) > 1:
                 manager.update_log(
                     event="Processing URL",
                     details=f"{index}/{len(job.request.urls)}: {url}",
                 )
+            manager.log_debug(event="Debug", details=f"Starting download for {url}")
             args = _build_namespace(str(url), job.request)
             await validate_and_download(bunkr_status, str(url), manager, args=args)
+            manager.log_debug(event="Debug", details=f"Completed download for {url}")
 
         manager.stop()
         job.status = JobStatus.COMPLETED

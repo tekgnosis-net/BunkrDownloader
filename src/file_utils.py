@@ -31,13 +31,19 @@ def write_file(filename: str, content: str = "") -> None:
 
     If content is not provided, the file is cleared.
     """
-    with Path(filename).open("w", encoding="utf-8") as file:
+    path = Path(filename)
+    if path.parent != Path(""):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
         file.write(content)
 
 
 def write_on_session_log(content: str) -> None:
     """Append content to the session log file."""
-    with Path(SESSION_LOG).open("a", encoding="utf-8") as file:
+    path = Path(SESSION_LOG)
+    if path.parent != Path(""):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
         file.write(f"{content}\n")
 
 

@@ -6,6 +6,7 @@ settings into a single location.
 
 from __future__ import annotations
 
+import os
 from argparse import ArgumentParser
 from collections import deque
 from dataclasses import dataclass, field
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 # ============================
 DOWNLOAD_FOLDER = "Downloads"  # The folder where downloaded files will be stored.
 URLS_FILE = "URLs.txt"         # The file containing the list of URLs to process.
-SESSION_LOG = "session.log"    # The file used to log errors.
+SESSION_LOG = os.getenv("SESSION_LOG_PATH", "session.log")  # The file used to log errors.
 MIN_DISK_SPACE_GB = 2          # Minimum free disk space (in GB) required.
 
 # ============================
@@ -189,6 +190,18 @@ def add_common_arguments(parser: ArgumentParser) -> None:
         "--disable-disk-check",
         action="store_true",
         help="Disable the disk space check for available free space.",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=MAX_WORKERS,
+        help="Maximum concurrent downloads for album items (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=["debug", "info", "warning", "error"],
+        default="info",
+        help="Verbosity used for runtime logs.",
     )
 
 
