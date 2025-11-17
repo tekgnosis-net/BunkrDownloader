@@ -15,6 +15,8 @@ from requests.exceptions import ChunkedEncodingError, RequestException
 from src.config import DOWNLOAD_HEADERS, LARGE_FILE_CHUNK_SIZE, THRESHOLDS
 from src.managers.progress_manager import ProgressManager
 
+DEFAULT_UNKNOWN_SIZE_BASELINE = 50 * 1024 * 1024
+
 
 def get_chunk_size(file_size: int) -> int:
     """Determine the optimal chunk size based on the file size."""
@@ -69,6 +71,29 @@ def _log_once(progress_manager: ProgressManager, message: str) -> None:
         update_log(event="Download progress", details=message)
 
 
+class _ProgressEstimator:  # pylint: disable=too-few-public-methods
+    """Track a rolling progress estimate when file size is unknown."""
+
+    __slots__ = ("baseline", "estimate")
+
+    def __init__(self, baseline: float) -> None:
+        self.baseline = baseline if baseline > 0 else float(DEFAULT_UNKNOWN_SIZE_BASELINE)
+        self.estimate = 0.0
+
+    def update(self, downloaded_bytes: int) -> float:
+        """Return the next completion percentage for the streamed download."""
+        if downloaded_bytes <= 0:
+            return self.estimate
+
+        if self.baseline <= 0:
+            self.baseline = float(downloaded_bytes) or 1.0
+
+        linear_progress = (downloaded_bytes / self.baseline) * 100
+        log_scaled_progress = math.log10(downloaded_bytes + 1) * 20.0
+        self.estimate = min(99.0, max(self.estimate, linear_progress, log_scaled_progress))
+        return self.estimate
+
+
 def save_file_with_progress(
     response: Response,
     download_path: str,
@@ -96,8 +121,11 @@ def save_file_with_progress(
     temp_download_path = Path(download_path).with_suffix(".temp")
     chunk_size = get_chunk_size(file_size or 0)
     total_downloaded = 0
-    estimated_progress = 0.0
-    estimation_baseline = float(file_size or 50 * 1024 * 1024)
+    estimator = (
+        _ProgressEstimator(float(DEFAULT_UNKNOWN_SIZE_BASELINE))
+        if file_size is None
+        else None
+    )
 
     try:
         with temp_download_path.open("wb") as file:
@@ -106,20 +134,18 @@ def save_file_with_progress(
                     file.write(chunk)
                     total_downloaded += len(chunk)
                     if file_size:
-                        completed = min(100.0, (total_downloaded / file_size) * 100)
-                        progress_manager.update_task(task, completed=completed)
-                    else:
-                        # Gradually approach 99% to indicate activity for unknown sizes.
-                        if estimation_baseline <= 0:
-                            estimation_baseline = float(len(chunk)) or 1.0
-                        linear_progress = (total_downloaded / estimation_baseline) * 100
-                        log_progress = math.log10(total_downloaded + 1) * 20.0
-                        target_progress = max(linear_progress, log_progress)
-                        estimated_progress = min(
-                            99.0,
-                            max(estimated_progress, target_progress),
+                        progress_manager.update_task(
+                            task,
+                            completed=min(100.0, (total_downloaded / file_size) * 100),
                         )
-                        progress_manager.update_task(task, completed=estimated_progress)
+                    else:
+                        estimator = estimator or _ProgressEstimator(
+                            float(len(chunk)) or 1.0
+                        )
+                        progress_manager.update_task(
+                            task,
+                            completed=estimator.update(total_downloaded),
+                        )
 
     # Handle partial downloads caused by network interruptions
     except ChunkedEncodingError:
