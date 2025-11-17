@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.4.0 (2025-11-17)
+
+### Feature
+
+* feat: improve progress reporting and compose build flexibility ([`71fe767`](https://github.com/tekgnosis-net/BunkrDownloader/commit/71fe7670c8d554130451fdeae4f2ab0080040fa1))
+
 ## v0.3.5 (2025-11-17)
 
 ### Documentation
