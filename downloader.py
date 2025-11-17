@@ -57,11 +57,14 @@ async def handle_download_process(
     url: str,
     initial_soup: BeautifulSoup,
     live_manager: LiveManager,
-    *,
-    max_workers: int = MAX_WORKERS,
-    log_level: str = "info",
 ) -> None:
     """Handle the download process for a Bunkr album or a single item."""
+    if session_info.args:
+        log_level = getattr(session_info.args, "log_level", "info")
+        max_workers = getattr(session_info.args, "max_workers", MAX_WORKERS)
+    else:
+        log_level = "info"
+        max_workers = MAX_WORKERS
     host_page = get_host_page(url)
     identifier = get_identifier(url, soup=initial_soup)
 
@@ -154,8 +157,6 @@ async def validate_and_download(
             url,
             soup,
             live_manager,
-            max_workers=max_workers,
-            log_level=log_level,
         )
 
     except (RequestConnectionError, Timeout, RequestException) as err:
