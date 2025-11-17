@@ -183,31 +183,35 @@ def update_network_settings(
     module_globals = globals()
 
     if status_page:
-        module_globals["STATUS_PAGE"] = status_page
+        module_globals["STATUS_PAGE"] = str(status_page)
 
     if api_endpoint:
-        module_globals["BUNKR_API"] = api_endpoint
+        module_globals["BUNKR_API"] = str(api_endpoint)
 
     if fallback_domain:
-        module_globals["FALLBACK_DOMAIN"] = fallback_domain
+        module_globals["FALLBACK_DOMAIN"] = str(fallback_domain)
 
     if user_agent:
-        HEADERS["User-Agent"] = user_agent
-        DOWNLOAD_HEADERS["User-Agent"] = user_agent
+        user_agent_str = str(user_agent)
+        HEADERS["User-Agent"] = user_agent_str
+        DOWNLOAD_HEADERS["User-Agent"] = user_agent_str
 
     if download_referer:
-        DOWNLOAD_HEADERS["Referer"] = download_referer
+        DOWNLOAD_HEADERS["Referer"] = str(download_referer)
 
 
 def get_network_settings() -> dict[str, str]:
     """Return the currently active Bunkr networking settings."""
 
+    download_referer = DOWNLOAD_HEADERS.get("Referer")
+    user_agent = HEADERS.get("User-Agent")
+
     return {
-        "status_page": STATUS_PAGE,
-        "api_endpoint": BUNKR_API,
-        "download_referer": DOWNLOAD_HEADERS.get("Referer", ""),
-        "user_agent": HEADERS.get("User-Agent", ""),
-        "fallback_domain": FALLBACK_DOMAIN,
+        "status_page": str(STATUS_PAGE),
+        "api_endpoint": str(BUNKR_API),
+        "download_referer": str(download_referer) if download_referer else "",
+        "user_agent": str(user_agent) if user_agent else "",
+        "fallback_domain": str(FALLBACK_DOMAIN),
     }
 
 
