@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v0.3.5 (2025-11-17)
+
+### Documentation
+
+* docs: note post-push workflow checks ([`08dadb4`](https://github.com/tekgnosis-net/BunkrDownloader/commit/08dadb45f15756c7ce3ae0960537b220dfb93444))
+
+### Fix
+
+* fix: quiet download progress lint ([`3f96696`](https://github.com/tekgnosis-net/BunkrDownloader/commit/3f96696279a13430c2049d90e3c62aaaaa0e07cb))
+
 ## v0.3.4 (2025-11-17)
 
 ### Fix
