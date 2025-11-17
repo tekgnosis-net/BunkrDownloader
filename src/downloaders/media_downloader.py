@@ -70,6 +70,7 @@ class MediaDownloader:
                     final_path,
                     self.download_info.task,
                     self.live_manager,
+                    download_url=self.download_info.download_link,
                 )
 
         # Download failed

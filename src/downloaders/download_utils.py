@@ -1,13 +1,18 @@
 """Utilities for handling file downloads with progress tracking."""
 
+from __future__ import annotations
+
 import logging
+import math
 import shutil
 from pathlib import Path
+from typing import Callable
 
+import requests
 from requests import Response
-from requests.exceptions import ChunkedEncodingError
+from requests.exceptions import ChunkedEncodingError, RequestException
 
-from src.config import LARGE_FILE_CHUNK_SIZE, THRESHOLDS
+from src.config import DOWNLOAD_HEADERS, LARGE_FILE_CHUNK_SIZE, THRESHOLDS
 from src.managers.progress_manager import ProgressManager
 
 
@@ -21,26 +26,78 @@ def get_chunk_size(file_size: int) -> int:
     return LARGE_FILE_CHUNK_SIZE
 
 
+def _resolve_content_length(response: Response, download_url: str | None) -> int | None:
+    """Extract a positive content length from the response or fallback to HEAD."""
+
+    def _normalise(value: object) -> int | None:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    header_length = _normalise(response.headers.get("Content-Length"))
+    if header_length:
+        return header_length
+
+    raw_remaining = _normalise(getattr(response.raw, "length_remaining", None))
+    if raw_remaining:
+        return raw_remaining
+
+    if not download_url:
+        return None
+
+    try:
+        head_resp = requests.head(
+            download_url,
+            headers=DOWNLOAD_HEADERS,
+            timeout=15,
+            allow_redirects=True,
+        )
+        head_resp.raise_for_status()
+    except RequestException:
+        return None
+
+    return _normalise(head_resp.headers.get("Content-Length"))
+
+
+def _log_once(progress_manager: ProgressManager, message: str) -> None:
+    """Emit a log message if the progress manager supports logging."""
+
+    update_log: Callable[..., None] | None = getattr(progress_manager, "update_log", None)
+    if callable(update_log):
+        update_log(event="Download progress", details=message)
+
+
 def save_file_with_progress(
     response: Response,
     download_path: str,
     task: int,
     progress_manager: ProgressManager,
+    *,
+    download_url: str | None = None,
 ) -> bool:
     """Save the file from the response to the specified path.
 
-    Add a `.temp` extension if the download is partial. Handles network interruptions
-    such as IncompleteRead and ConnectionResetError (wrapped in ChunkedEncodingError)
-    by marking the download as incomplete.
+    Adds a `.temp` extension for in-flight downloads and attempts to infer the
+    content length so live progress can be reported accurately. When the server
+    omits the header, a best-effort estimate is used so the UI still reflects
+    activity while streaming.
     """
-    file_size = int(response.headers.get("Content-Length", -1))
-    if file_size == -1:
-        logging.warning("Content length not provided in response headers.")
+    file_size = _resolve_content_length(response, download_url)
+    if file_size is None:
+        logging.warning("Content length unavailable for %s", download_path)
+        _log_once(
+            progress_manager,
+            "Server did not provide a content length. Progress will be estimated.",
+        )
 
     # Initialize a temporary download path with the .temp extension
     temp_download_path = Path(download_path).with_suffix(".temp")
-    chunk_size = get_chunk_size(file_size)
+    chunk_size = get_chunk_size(file_size or 0)
     total_downloaded = 0
+    estimated_progress = 0.0
+    estimation_baseline = float(file_size or 50 * 1024 * 1024)
 
     try:
         with temp_download_path.open("wb") as file:
@@ -48,17 +105,39 @@ def save_file_with_progress(
                 if chunk is not None:
                     file.write(chunk)
                     total_downloaded += len(chunk)
-                    completed = (total_downloaded / file_size) * 100
-                    progress_manager.update_task(task, completed=completed)
+                    if file_size:
+                        completed = min(100.0, (total_downloaded / file_size) * 100)
+                        progress_manager.update_task(task, completed=completed)
+                    else:
+                        # Gradually approach 99% to indicate activity for unknown sizes.
+                        if estimation_baseline <= 0:
+                            estimation_baseline = float(len(chunk)) or 1.0
+                        linear_progress = (total_downloaded / estimation_baseline) * 100
+                        log_progress = math.log10(total_downloaded + 1) * 20.0
+                        target_progress = max(linear_progress, log_progress)
+                        estimated_progress = min(
+                            99.0,
+                            max(estimated_progress, target_progress),
+                        )
+                        progress_manager.update_task(task, completed=estimated_progress)
 
     # Handle partial downloads caused by network interruptions
     except ChunkedEncodingError:
         return True
 
     # Rename temp file to final filename if fully downloaded
-    if total_downloaded == file_size:
+    if file_size and total_downloaded == file_size:
         shutil.move(temp_download_path, download_path)
+        progress_manager.update_task(task, completed=100)
         return False
 
     # Keep partial file and return True if incomplete
+    if not file_size:
+        try:
+            shutil.move(temp_download_path, download_path)
+        except OSError:
+            return True
+        progress_manager.update_task(task, completed=100)
+        return False
+
     return True

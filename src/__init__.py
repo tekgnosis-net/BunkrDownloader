@@ -16,6 +16,8 @@ to be easily imported and used across different parts of the application.
 
 # src/__init__.py
 
+from __future__ import annotations
+
 import os
 from importlib import metadata
 from pathlib import Path
@@ -33,7 +35,7 @@ __all__ = [
     "__version__",
 ]
 
-_SEMANTIC_VERSION = "0.3.1"
+_DEFAULT_VERSION = "0.0.0"
 
 
 def _derive_version() -> str:
@@ -60,7 +62,7 @@ def _derive_version() -> str:
             if isinstance(version, str) and version:
                 return version
 
-    return _SEMANTIC_VERSION
+    return _DEFAULT_VERSION
 
 
 __version__ = _derive_version()
