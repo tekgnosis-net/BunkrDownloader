@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.2.1 (2025-11-17)
+
+### Fix
+
+* fix: satisfy pylint arg limit ([`03b634b`](https://github.com/tekgnosis-net/BunkrDownloader/commit/03b634bc4de2e4e7ae95fca2fbc9b6016d99c64b))
+
 ## v0.2.0 (2025-11-17)
 
 ### Feature
