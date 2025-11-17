@@ -24,42 +24,45 @@ git checkout -b bugfix/fix-issue-123
 
 ### 3. Follow the Code Style
 
-We use **Ruff** for linting and code formatting. Please make sure your code follows these rules, provided in `ruff.toml`:
-
-```toml
-[lint]
-select = ["ALL"]
-line-length = 88
-```
-
-Ensure all code passes Ruff checks before committing:
+We rely on the standard library and `pylint` to enforce consistency. Before committing, activate the project virtual environment and lint every tracked Python file:
 
 ```bash
-ruff check .
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m pylint $(git ls-files '*.py')
 ```
+
+Resolve every warning or error that `pylint` reports. Committers cannot push while lint fails in CI.
 
 ### 4. Write Clear Commits
 
-- Use concise commit messages (less than 50 characters for the title).
-- Include a more detailed description if needed.
+- Follow the [Conventional Commits](https://www.conventionalcommits.org/) style so our semantic-release automation can produce changelogs (`feat:`, `fix:`, `docs:`, etc.).
+- Keep the subject line concise (≤50 chars) and use the body for context when needed.
 
 Example:
 ```
-Add new utility function for matrix inversion
+fix: surface CDN outages in job log
 
-This function handles small matrices with optimized performance and includes comprehensive tests.
+Adds a warning when file downloads retry across subdomains so operators can spot partial outages faster.
 ```
 
 ### 5. Testing
 
-If applicable, write tests for your code. Make sure all existing and new tests pass before creating a pull request.
+This repository does not yet ship a full automated test suite, so we lean on fast smoke checks:
+
+- `python -m compileall src` ensures all Python sources are syntactically valid.
+- `npm run build` compiles the web dashboard bundle.
+- Run the CLI (`python3 downloader.py <url> --disable-ui`) or the web stack (`docker compose up --build`) when your changes touch runtime behaviour.
+
+Please add targeted tests when you introduce new logic so we can build out coverage over time.
 
 ### 6. Pull Requests
 
 1. Push your branch to your fork.
 2. Open a pull request (PR) against the `main` branch of this repository.
-3. Provide a clear description of what your PR changes and why.
-4. Respond to any feedback and make updates if necessary.
+3. Provide a clear description of what your PR changes and why, including manual verification steps.
+4. Keep your branch rebased onto the latest `main` and respond quickly to review feedback.
 
 ### 7. Reporting Issues
 

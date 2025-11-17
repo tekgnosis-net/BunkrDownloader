@@ -16,8 +16,9 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
   - [Configuration](#configuration)
   - [Architecture](#architecture)
   - [Development](#development)
+  - [Contributing](#contributing)
   - [Automation](#automation)
-  - [Support & Issues](#support--issues)
+  - [Support \& Issues](#support--issues)
   - [Forked credits](#forked-credits)
   - [License](#license)
 
@@ -88,9 +89,16 @@ python3 main.py [shared flags]
 
 ## Development
 - Python ≥ 3.10, Node ≥ 18 recommended.
+- Activate the virtualenv and lint with `python -m pylint $(git ls-files '*.py')`; resolve any findings before committing.
 - Run `python -m compileall src` and `npm run build` before opening a PR to catch syntax/bundle issues.
 - `docker compose up --build` exercises the full stack locally using the tracked `.env`.
 - Use `session.log` and the web log pane to inspect failed URLs or storage issues.
+
+## Contributing
+- Start with the guidelines in `CONTRIBUTING.md` for branching, linting, and smoke-test expectations.
+- Prefer [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, etc.) so semantic-release can generate changelogs correctly.
+- Include the manual checks you ran (lint, `compileall`, `npm run build`, CLI/Web smoke tests) in your pull request description.
+- Keep your branch rebased on `main` and respond quickly to review feedback to keep the release pipeline flowing.
 
 ## Automation
 - `.github/workflows/docker.yml` builds and pushes a multi-platform image (`linux/amd64`, `linux/arm64`) to GitHub Container Registry on every push to `main`.
@@ -105,7 +113,7 @@ python3 main.py [shared flags]
 - Blank issues are disabled, so pick the template that’s closest to your situation and use the “Additional context” field to capture anything extra.
 
 ## Forked credits
-This project is a fork of [Lysagxra/BunkrDownloader](https://github.com/Lysagxra/BunkrDownloader). However, it has been modified for a web dashboard interface and other enhancements such as dockerizing the application.
+This project is a fork of [Lysagxra/BunkrDownloader](https://github.com/Lysagxra/BunkrDownloader). However, it has been heavily refactored and modified for a web dashboard interface and other enhancements including dockerizing the application.
 
 ## License
 MIT License © tekgnosis-net
