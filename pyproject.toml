@@ -1,6 +1,6 @@
 [project]
 name = "bunkrdownloader"
-version = "0.3.0"
+version = "0.3.1"
 description = "Rich CLI and web dashboard for downloading from Bunkr."
 readme = "README.md"
 requires-python = ">=3.10"

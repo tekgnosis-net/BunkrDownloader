@@ -50,22 +50,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           before_sha=$(git rev-parse HEAD)
           python -m semantic_release version
           after_sha=$(git rev-parse HEAD)
 
-          version=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'], end='')")
-          if [ -z "$version" ]; then
-            echo "::error::Unable to determine project version" >&2
-            exit 1
-          fi
-
-          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build_sha=$after_sha" >> "$GITHUB_OUTPUT"
+
           if [ "$before_sha" != "$after_sha" ]; then
+            latest_tag=$(git describe --tags --abbrev=0 "$after_sha")
+            version=${latest_tag#v}
             echo "released=true" >> "$GITHUB_OUTPUT"
-            echo "tag=v$version" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "tag=$latest_tag" >> "$GITHUB_OUTPUT"
           else
+            current_tag=$(git describe --tags --abbrev=0 "$after_sha" 2>/dev/null || true)
+            if [ -n "$current_tag" ]; then
+              trimmed=${current_tag#v}
+              echo "version=$trimmed" >> "$GITHUB_OUTPUT"
+            else
+              echo "version=" >> "$GITHUB_OUTPUT"
+            fi
             echo "released=false" >> "$GITHUB_OUTPUT"
             echo "tag=" >> "$GITHUB_OUTPUT"
           fi
@@ -73,6 +79,7 @@ jobs:
   build-and-push:
     name: Build and push Docker image
     needs: release
+    if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,7 +88,7 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository }}
-      RELEASE_VERSION: ${{ needs.release.outputs.version }}
+      RELEASE_TAG: ${{ needs.release.outputs.tag }}
       BUILD_SHA: ${{ needs.release.outputs.build_sha }}
     steps:
       - name: Checkout released commit
@@ -105,12 +112,13 @@ jobs:
       - name: Compute version parts
         id: version_parts
         env:
-          VERSION: ${{ env.RELEASE_VERSION }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
-          if [ -z "$VERSION" ]; then
-            echo "::error::Release job did not surface a version" >&2
+          if [ -z "$TAG" ]; then
+            echo "::error::Release job did not provide a release tag" >&2
             exit 1
           fi
+          VERSION=${TAG#v}
           IFS='.' read -r MAJOR MINOR PATCH <<<"$VERSION"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "major=${MAJOR}" >> "$GITHUB_OUTPUT"

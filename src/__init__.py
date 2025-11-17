@@ -17,7 +17,13 @@ to be easily imported and used across different parts of the application.
 # src/__init__.py
 
 import os
+from importlib import metadata
+from pathlib import Path
 
+try:  # Python >=3.11 ships tomllib
+    import tomllib as TOMLIB
+except ModuleNotFoundError:  # pragma: no cover - safeguard for older interpreters
+    TOMLIB = None
 __all__ = [
     "bunkr_utils",
     "config",
@@ -27,5 +33,34 @@ __all__ = [
     "__version__",
 ]
 
-_SEMANTIC_VERSION = "0.3.0"
-__version__ = os.getenv("APP_VERSION", _SEMANTIC_VERSION)
+_SEMANTIC_VERSION = "0.3.1"
+
+
+def _derive_version() -> str:
+    """Resolve the best available application version string."""
+
+    env_version = os.getenv("APP_VERSION")
+    if env_version and env_version.lower() != "latest":
+        return env_version
+
+    try:
+        return metadata.version("bunkrdownloader")
+    except metadata.PackageNotFoundError:
+        pass
+
+    if TOMLIB is not None:
+        pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        try:
+            loaded = TOMLIB.loads(pyproject_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError):
+            loaded = None
+        if loaded:
+            project = loaded.get("project") or {}
+            version = project.get("version")
+            if isinstance(version, str) and version:
+                return version
+
+    return _SEMANTIC_VERSION
+
+
+__version__ = _derive_version()
