@@ -22,6 +22,7 @@
 ## Pre-commit Requirements
 - Before staging or committing anything, run `python -m pylint $(git ls-files '*.py')` inside the activated virtualenv and resolve every reported issue—no commits or pushes are allowed while lint fails.
 - Run the relevant local smoke tests for the area you touched (CLI runs, `python -m compileall src`, frontend build, etc.) and do not push until they succeed, so CI workflows stay green.
+- After every push (local or CI-generated), monitor the GitHub Actions runs until they finish. Failing jobs must be diagnosed immediately before moving on, and only the instructions-owner should rerun failed jobs once the underlying issue is fixed.
 
 ## Conventions & Integration Points
 - Extend CLI options in `src/config.py` (`setup_parser`/`parse_arguments`) so both entrypoints stay aligned.
