@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.3.3 (2025-11-17)
+
+### Fix
+
+* fix: unify release version sourcing ([`3f6c98c`](https://github.com/tekgnosis-net/BunkrDownloader/commit/3f6c98c1595a45ea6fc69e8b56556927a36768d4))
+
 ## v0.3.2 (2025-11-17)
 
 ### Documentation
