@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v0.3.2 (2025-11-17)
+
+### Documentation
+
+* docs: align contributing guidance ([`ce4d744`](https://github.com/tekgnosis-net/BunkrDownloader/commit/ce4d744ec3ddec513e313f9f80d5ba4f731ca8d4))
+
+### Fix
+
+* fix: normalise network defaults ([`1f0e2dc`](https://github.com/tekgnosis-net/BunkrDownloader/commit/1f0e2dcbae8279f1fdbcc112629e251ff78c8172))
+
 ## v0.3.1 (2025-11-17)
 
 ### Fix
