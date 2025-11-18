@@ -78,6 +78,7 @@ const deriveWsUrl = (jobId) => {
 const DEFAULT_LOG_RETENTION = 200;
 const FORM_STORAGE_KEY = "bunkrdownloader:form";
 const SETTINGS_STORAGE_KEY = "bunkrdownloader:settings";
+const ACTIVE_JOB_STORAGE_KEY = "bunkrdownloader:active-job";
 const DEFAULT_SETTINGS = {
   logLevel: "info",
   logRetention: DEFAULT_LOG_RETENTION,
@@ -181,6 +182,75 @@ function App() {
   const badgeBg = useColorModeValue("gray.200", "gray.700");
   const badgeTextColor = useColorModeValue("gray.800", "gray.100");
   const logBg = useColorModeValue("gray.50", "gray.900");
+
+  const persistActiveJob = useCallback((id) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      if (!id) {
+    useEffect(() => {
+      if (typeof window === "undefined") {
+        return;
+      }
+
+      try {
+        const stored = window.localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
+        if (!stored) {
+          return;
+        }
+
+        const parsed = JSON.parse(stored);
+        if (!parsed?.id) {
+          window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+          return;
+        }
+
+        const restoredJobId = parsed.id;
+        appendLogEntry("Info", `Resuming progress tracking for job ${restoredJobId}`, "client");
+        setJobId(restoredJobId);
+        jobIdRef.current = restoredJobId;
+        eventIndexRef.current = 0;
+        jobStatusRef.current = "running";
+        setJobStatus("running");
+        stopPolling();
+        clearReconnect();
+        startPolling(restoredJobId);
+        openWebSocket(restoredJobId, true);
+      } catch (error) {
+        console.warn("Failed to restore active job", error);
+        try {
+          window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+        } catch (cleanupError) {
+          console.warn("Failed to clear corrupted active job record", cleanupError);
+        }
+      }
+    }, [appendLogEntry]);
+        window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+        return;
+      }
+
+      window.localStorage.setItem(
+        ACTIVE_JOB_STORAGE_KEY,
+        JSON.stringify({ id, timestamp: Date.now() })
+      );
+    } catch (error) {
+      console.warn("Failed to persist active job", error);
+    }
+  }, []);
+
+  const clearActiveJobRecord = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+    } catch (error) {
+      console.warn("Failed to clear active job record", error);
+    }
+  }, []);
 
   const pushLogEntry = useCallback((entry) => {
     setLogs((prev) => {
@@ -301,6 +371,9 @@ function App() {
             setJobStatus("failed");
             jobStatusRef.current = "failed";
           }
+          jobIdRef.current = null;
+          setJobId(null);
+          clearActiveJobRecord();
           return;
         }
         console.error("Polling failed", error);
@@ -526,6 +599,7 @@ function App() {
     setLogs([]);
     setJobError(null);
     setWsConnected(false);
+    clearActiveJobRecord();
   };
 
   const handleEvent = (event) => {
@@ -547,6 +621,7 @@ function App() {
           setJobId(null);
           setOverall(null);
           setTasks({});
+          clearActiveJobRecord();
         }
         if (logLevel === "debug") {
           appendLogEntry(
@@ -703,6 +778,7 @@ function App() {
 
     startPolling(jobIdRef.current);
     openWebSocket(jobIdRef.current, true);
+    persistActiveJob(jobIdRef.current);
   };
 
   const handleSubmit = async (event) => {
@@ -753,6 +829,7 @@ function App() {
   clearReconnect();
   startPolling(data.job_id);
   openWebSocket(data.job_id);
+  persistActiveJob(data.job_id);
       toast({
         title: "Download started",
         description: `Tracking job ${data.job_id}`,
@@ -800,7 +877,7 @@ function App() {
                 onClick={refreshProgressConnection}
                 variant={wsConnected ? "outline" : "solid"}
                 colorScheme={wsConnected ? "green" : "orange"}
-                isDisabled={!jobId}
+                isDisabled={!jobId && !jobIdRef.current}
               >
                 Refresh progress
               </Button>
