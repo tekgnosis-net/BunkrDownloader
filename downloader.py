@@ -123,6 +123,12 @@ async def validate_and_download(
         )
 
     soup = await fetch_page(url)
+    if soup is None:
+        live_manager.update_log(
+            event="Fetch failed",
+            details=f"Unable to load page content for {url}. Please verify the link and retry.",
+        )
+        raise RuntimeError(f"Failed to fetch page for {url}")
     album_id = get_album_id(url) if check_url_type(url) else None
     album_name = get_album_name(soup)
 

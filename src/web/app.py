@@ -115,6 +115,7 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class JobEventBroker:
@@ -464,6 +465,15 @@ async def _run_download_job(job: Job) -> None:
         job.status = JobStatus.COMPLETED
         job.event_broker.publish(_status_event(JobStatus.COMPLETED))
 
+    except asyncio.CancelledError as cancel_err:
+        logger.info("Download job %s cancelled", job.job_id)
+        job.status = JobStatus.CANCELLED
+        job.error = "Cancelled by user"
+        manager.update_log(event="Download cancelled", details="Cancelled by user request")
+        manager.stop()
+        job.event_broker.publish(_status_event(JobStatus.CANCELLED, "Cancelled by user"))
+        raise cancel_err
+
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.exception("Download job %s failed", job.job_id)
         job.status = JobStatus.FAILED
@@ -525,6 +535,42 @@ async def get_download(job_id: str) -> JobInfo:
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return JobInfo(**job.as_dict())
+
+
+@app.post("/api/downloads/{job_id}/cancel")
+async def cancel_download(job_id: str) -> dict[str, Any]:
+    """Attempt to cancel a running download job."""
+
+    job = job_store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status in {
+        JobStatus.COMPLETED,
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+    }:
+        return {"status": job.status.value}
+
+    if job.task is None:
+        job.status = JobStatus.CANCELLED
+        job.error = "Cancelled before start"
+        if job.manager:
+            job.manager.update_log(
+                event="Download cancelled",
+                details="Cancelled before the task started",
+            )
+            job.manager.stop()
+        job.event_broker.publish(_status_event(JobStatus.CANCELLED, "Cancelled before start"))
+        return {"status": job.status.value}
+
+    job.task.cancel()
+    try:
+        await job.task
+    except asyncio.CancelledError:
+        pass
+
+    return {"status": job.status.value}
 
 
 @app.get("/api/downloads/{job_id}/events")

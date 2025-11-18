@@ -46,7 +46,7 @@ import {
   useColorModeValue,
   useToast
 } from "@chakra-ui/react";
-import { RepeatIcon, MoonIcon, SunIcon } from "@chakra-ui/icons";
+import { RepeatIcon, MoonIcon, SunIcon, CloseIcon } from "@chakra-ui/icons";
 import { FaGithub } from "react-icons/fa";
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const WS_BASE = import.meta.env.VITE_WS_BASE_URL ?? null;
@@ -160,6 +160,7 @@ function App() {
   const [tasks, setTasks] = useState({});
   const [logs, setLogs] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [jobError, setJobError] = useState(null);
   const [appVersion, setAppVersion] = useState("dev");
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -276,6 +277,19 @@ function App() {
     [allTasks]
   );
 
+  const statusColor = useMemo(() => {
+    if (jobStatus === "failed") {
+      return "red";
+    }
+    if (jobStatus === "completed") {
+      return "green";
+    }
+    if (jobStatus === "cancelled") {
+      return "yellow";
+    }
+    return "blue";
+  }, [jobStatus]);
+
   const derivedOverall = useMemo(() => {
     if (!allTasks.length && !overall) {
       return null;
@@ -307,8 +321,19 @@ function App() {
     [allTasks]
   );
 
+  const canStopJob = useMemo(
+    () => Boolean(jobId) && (jobStatus === "running" || jobStatus === "pending"),
+    [jobId, jobStatus]
+  );
+
+  const hasTrackedJob = Boolean(jobId);
+
   function isJobFinished() {
-    return jobStatusRef.current === "completed" || jobStatusRef.current === "failed";
+    return (
+      jobStatusRef.current === "completed" ||
+      jobStatusRef.current === "failed" ||
+      jobStatusRef.current === "cancelled"
+    );
   }
 
   function stopPolling() {
@@ -599,6 +624,7 @@ function App() {
     setLogs([]);
     setJobError(null);
     setWsConnected(false);
+    setIsStopping(false);
     clearActiveJobRecord();
   };
 
@@ -612,8 +638,14 @@ function App() {
           setJobError(event.message);
         } else if (event.status === "completed") {
           setJobError(null);
+        } else if (event.status === "cancelled") {
+          setJobError(event.message ?? "Download cancelled.");
         }
-        if (event.status === "failed" || event.status === "completed") {
+        if (
+          event.status === "failed" ||
+          event.status === "completed" ||
+          event.status === "cancelled"
+        ) {
           stopPolling();
           clearReconnect();
           eventIndexRef.current = 0;
@@ -622,6 +654,7 @@ function App() {
           setOverall(null);
           setTasks({});
           clearActiveJobRecord();
+          setIsStopping(false);
         }
         if (logLevel === "debug") {
           appendLogEntry(
@@ -781,6 +814,73 @@ function App() {
     persistActiveJob(jobIdRef.current);
   };
 
+  const stopDownload = async () => {
+    const activeJobId = jobIdRef.current ?? jobId;
+    if (!activeJobId) {
+      toast({
+        title: "No active download",
+        description: "Start a download before attempting to stop it.",
+        status: "info",
+        duration: 4000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    if (isStopping) {
+      return;
+    }
+
+    setIsStopping(true);
+    appendLogEntry("Info", `Cancellation requested for job ${activeJobId}`, "client");
+
+    try {
+      const { data } = await api.post(`/downloads/${activeJobId}/cancel`);
+      const responseStatus = data?.status;
+
+      if (responseStatus === "cancelled") {
+        setJobStatus("cancelled");
+        jobStatusRef.current = "cancelled";
+        stopPolling();
+        clearReconnect();
+        eventIndexRef.current = 0;
+        jobIdRef.current = null;
+        setJobId(null);
+        setOverall(null);
+        setTasks({});
+        clearActiveJobRecord();
+        setJobError("Download cancelled.");
+        toast({
+          title: "Download cancelled",
+          description: "The job was cancelled successfully.",
+          status: "success",
+          duration: 4000,
+          isClosable: true,
+        });
+      } else {
+        toast({
+          title: "Cancellation requested",
+          description: responseStatus
+            ? `Current job status: ${responseStatus}`
+            : "The server is processing the cancellation request.",
+          status: "info",
+          duration: 4000,
+          isClosable: true,
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Failed to cancel download",
+        description: error.response?.data?.detail ?? error.message,
+        status: "error",
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setIsStopping(false);
+    }
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     const urls = parseUrls(form.urls);
@@ -866,9 +966,22 @@ function App() {
           <Spacer />
           <HStack spacing={2} align="center">
             <Tooltip label="Current job status" hasArrow>
-              <Badge colorScheme={jobStatus === "failed" ? "red" : jobStatus === "completed" ? "green" : "blue"}>
+              <Badge colorScheme={statusColor}>
                 {jobStatus.toUpperCase()}
               </Badge>
+            </Tooltip>
+            <Tooltip label="Stop the current download" hasArrow>
+              <Button
+                size="sm"
+                leftIcon={<CloseIcon />}
+                onClick={stopDownload}
+                variant="solid"
+                colorScheme="red"
+                isDisabled={!canStopJob || isStopping}
+                isLoading={isStopping}
+              >
+                Stop download
+              </Button>
             </Tooltip>
             <Tooltip label={wsConnected ? "WebSocket connected" : "Reconnect progress updates"} hasArrow>
               <Button
@@ -877,7 +990,7 @@ function App() {
                 onClick={refreshProgressConnection}
                 variant={wsConnected ? "outline" : "solid"}
                 colorScheme={wsConnected ? "green" : "orange"}
-                isDisabled={!jobId && !jobIdRef.current}
+                isDisabled={!hasTrackedJob}
               >
                 Refresh progress
               </Button>
