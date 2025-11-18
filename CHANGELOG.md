@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.6.0 (2025-11-18)
+
+### Feature
+
+* feat(web): restore progress after reload ([`a5a2fb4`](https://github.com/tekgnosis-net/BunkrDownloader/commit/a5a2fb430c492180c08dcc3dae3502389a825342))
+
 ## v0.5.0 (2025-11-18)
 
 ### Feature
