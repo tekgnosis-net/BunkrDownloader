@@ -162,6 +162,7 @@ function App() {
   const [jobError, setJobError] = useState(null);
   const [appVersion, setAppVersion] = useState("dev");
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef(null);
   const pollRef = useRef(null);
   const reconnectRef = useRef(null);
@@ -524,6 +525,7 @@ function App() {
     setTasks({});
     setLogs([]);
     setJobError(null);
+    setWsConnected(false);
   };
 
   const handleEvent = (event) => {
@@ -633,10 +635,12 @@ function App() {
 
     const socket = new WebSocket(deriveWsUrl(nextJobId));
     wsRef.current = socket;
+    setWsConnected(false);
 
     socket.onopen = () => {
       stopPolling();
       clearReconnect();
+      setWsConnected(true);
     };
 
     socket.onmessage = (messageEvent) => {
@@ -651,6 +655,7 @@ function App() {
 
     socket.onclose = () => {
       wsRef.current = null;
+      setWsConnected(false);
       if (!isJobFinished()) {
         startPolling(jobIdRef.current);
         scheduleReconnect(jobIdRef.current);
@@ -659,6 +664,7 @@ function App() {
 
     socket.onerror = (event) => {
       console.error("WebSocket error", event);
+      setWsConnected(false);
       if (!isRetry) {
         toast({
           title: "WebSocket connection interrupted",
@@ -669,6 +675,34 @@ function App() {
         });
       }
     };
+  };
+
+  const refreshProgressConnection = () => {
+    if (!jobIdRef.current) {
+      toast({
+        title: "No active download",
+        description: "Start a download to track its progress.",
+        status: "info",
+        duration: 4000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    appendLogEntry("Info", "Manual progress refresh triggered", "client");
+    stopPolling();
+    clearReconnect();
+
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch (error) {
+        console.warn("Failed to close existing WebSocket", error);
+      }
+    }
+
+    startPolling(jobIdRef.current);
+    openWebSocket(jobIdRef.current, true);
   };
 
   const handleSubmit = async (event) => {
@@ -758,6 +792,18 @@ function App() {
               <Badge colorScheme={jobStatus === "failed" ? "red" : jobStatus === "completed" ? "green" : "blue"}>
                 {jobStatus.toUpperCase()}
               </Badge>
+            </Tooltip>
+            <Tooltip label={wsConnected ? "WebSocket connected" : "Reconnect progress updates"} hasArrow>
+              <Button
+                size="sm"
+                leftIcon={<RepeatIcon />}
+                onClick={refreshProgressConnection}
+                variant={wsConnected ? "outline" : "solid"}
+                colorScheme={wsConnected ? "green" : "orange"}
+                isDisabled={!jobId}
+              >
+                Refresh progress
+              </Button>
             </Tooltip>
             <Tooltip label={`Switch to ${colorMode === "dark" ? "light" : "dark"} theme`} hasArrow>
               <IconButton
