@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.6.1 (2025-11-18)
+
+### Fix
+
+* fix: handle missing bunkr status data ([`4cd355b`](https://github.com/tekgnosis-net/BunkrDownloader/commit/4cd355bb328cccba187a51a900515cc6cb027bd9))
+
 ## v0.6.0 (2025-11-18)
 
 ### Feature
