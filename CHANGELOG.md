@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.7.0 (2025-11-18)
+
+### Feature
+
+* feat: allow cancelling downloads and harden fetches ([`5204cfa`](https://github.com/tekgnosis-net/BunkrDownloader/commit/5204cfaaf2371abbe08ae371436f4bfe31b639a2))
+
 ## v0.6.2 (2025-11-18)
 
 ### Fix
