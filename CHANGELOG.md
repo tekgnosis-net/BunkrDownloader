@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.6.2 (2025-11-18)
+
+### Fix
+
+* fix: harden bunkr status handling ([`91bd275`](https://github.com/tekgnosis-net/BunkrDownloader/commit/91bd2752fefa1d81adbc8e12e9e3641532cc3a43))
+
 ## v0.6.1 (2025-11-18)
 
 ### Fix
