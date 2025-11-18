@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## v0.5.0 (2025-11-18)
+
+### Feature
+
+* feat(web): allow manual websocket refresh ([`6691394`](https://github.com/tekgnosis-net/BunkrDownloader/commit/66913947e10f061d39eb27084d1294cf3da004bc))
+
+### Test
+
+* test: tidy progress smoke tests ([`b445761`](https://github.com/tekgnosis-net/BunkrDownloader/commit/b44576151e7cbdceab84f56bd4024695acabc119))
+
+### Unknown
+
+* Update README.md ([`0bcc2d0`](https://github.com/tekgnosis-net/BunkrDownloader/commit/0bcc2d0dafbe3eb7cb38ecba4acf752c7e7643c5))
+
+* Minor updates. ([`a8325fc`](https://github.com/tekgnosis-net/BunkrDownloader/commit/a8325fcfa819638467a454502d950281814b1b61))
+
 ## v0.4.0 (2025-11-17)
 
 ### Feature
