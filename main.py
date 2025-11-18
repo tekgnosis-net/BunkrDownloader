@@ -45,7 +45,7 @@ async def main() -> None:
     check_python_version()
     args = parse_arguments(common_only=True)
     apply_argument_overrides(args)
-    bunkr_status = get_bunkr_status()
+    bunkr_status = get_bunkr_status() or {}
 
     # Read and process URLs, ignoring empty lines
     urls = [url.strip() for url in read_file(URLS_FILE) if url.strip()]

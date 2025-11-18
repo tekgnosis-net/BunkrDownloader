@@ -172,7 +172,7 @@ async def main() -> None:
 
     args = parse_arguments()
     apply_argument_overrides(args)
-    bunkr_status = get_bunkr_status()
+    bunkr_status = get_bunkr_status() or {}
     live_manager = initialize_managers(disable_ui=args.disable_ui)
 
     try:

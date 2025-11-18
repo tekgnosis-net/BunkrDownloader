@@ -439,6 +439,12 @@ async def _run_download_job(job: Job) -> None:
                 fallback_domain=job.request.network.fallback_domain,
             )
         bunkr_status = await asyncio.to_thread(get_bunkr_status)
+        if not isinstance(bunkr_status, dict):
+            logger.warning(
+                "Bunkr status lookup returned %s; defaulting to empty mapping",
+                type(bunkr_status),
+            )
+            bunkr_status = {}
         manager.log_debug(
             event="Debug",
             details=f"Fetched bunkr status for {len(bunkr_status)} hosts",
