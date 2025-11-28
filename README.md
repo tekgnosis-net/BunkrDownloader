@@ -100,12 +100,6 @@ python3 main.py [shared flags]
 - Include the manual checks you ran (lint, `compileall`, `npm run build`, CLI/Web smoke tests) in your pull request description.
 - Keep your branch rebased on `main` and respond quickly to review feedback to keep the release pipeline flowing.
 
-## Automation
-- `.github/workflows/docker.yml` builds and pushes a multi-platform image (`linux/amd64`, `linux/arm64`) to GitHub Container Registry on every push to `main`.
-- `.github/workflows/semantic-release.yml` promotes commits merged into `main` using [python-semantic-release](https://python-semantic-release.readthedocs.io/en/latest/) to create Git tags, changelog entries, and GitHub releases.
-- Images publish under `ghcr.io/tekgnosis-net/bunkrdownloader:latest` and `:sha`. Authenticate with `ghcr.io` using a PAT or `docker login ghcr.io -u <user> -p <token>`.
-  - Version tags matching the generated semantic version (for example `ghcr.io/tekgnosis-net/bunkrdownloader:1.2.3`) are published alongside `latest`.
-
 ## Support & Issues
 - Open a new issue from the repository’s **Issues → New issue** page; choose the **Bug report** template for defects or the **Feature request** template for enhancements.
 - The templates collect environment details (OS, Python version, tool version) and walk you through logs, reproduction steps, and desired outcomes so maintainers can triage quickly.
