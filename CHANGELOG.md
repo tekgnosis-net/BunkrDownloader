@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## v0.7.1 (2026-02-02)
+
+### Documentation
+
+* docs: improve docker compose instructions and add star history ([`840b78a`](https://github.com/tekgnosis-net/BunkrDownloader/commit/840b78ab82a7a3082ee9c8ed574f2970f0d97ebe))
+
+### Fix
+
+* fix: set pull_policy to always in docker-compose ([`c3a0ca8`](https://github.com/tekgnosis-net/BunkrDownloader/commit/c3a0ca8caa5e164d9f94f8071aeee03cc381f634))
+
+### Unknown
+
+* Updated details in README
+
+Removed sections detailing automation workflows for container builds and semantic release processes. ([`a59818b`](https://github.com/tekgnosis-net/BunkrDownloader/commit/a59818b27f5959f6cf29ea7566b336b5ecc80742))
+
 ## v0.7.0 (2025-11-18)
 
 ### Feature
