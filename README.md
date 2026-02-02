@@ -4,12 +4,16 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 ![Web dashboard screenshot](assets/WebUI.png)
 
+> **If you find this project useful, please consider giving it a star on GitHub! ⭐**
+
 ## Table of Contents
 - [BunkrDownloader](#bunkrdownloader)
   - [Table of Contents](#table-of-contents)
   - [Highlights](#highlights)
   - [Quick Start](#quick-start)
     - [With Docker Compose (recommended)](#with-docker-compose-recommended)
+      - [Common Operations](#common-operations)
+      - [Environment Variables](#environment-variables)
     - [Local runtime](#local-runtime)
   - [CLI Usage](#cli-usage)
   - [Web Dashboard](#web-dashboard)
@@ -21,6 +25,7 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
   - [Support \& Issues](#support--issues)
   - [Forked credits](#forked-credits)
   - [License](#license)
+  - [Star History](#star-history)
 
 ## Highlights
 - **Dual experience**: Python CLI (`downloader.py`, `main.py`) or a Chakra UI dashboard powered by FastAPI.
@@ -32,13 +37,48 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 ## Quick Start
 
 ### With Docker Compose (recommended)
-```bash
-cd BunkrDownloader
-cp .env.sample .env                     # customise API_PORT, DOWNLOADS_DIR, etc.
-docker compose pull                     # grabs ghcr.io/tekgnosis-net/bunkrdownloader:${IMAGE_TAG:-latest}
-docker compose up -d                    # start the FastAPI + web UI stack
-```
-By default the service listens on `http://localhost:8000`. Override the port or downloads path by editing `.env` (or exporting `API_PORT` / `DOWNLOADS_DIR` before `docker compose up`). Set `IMAGE_TAG` to a published semantic version (for example `1.2.3`) if you want to pin a specific release; otherwise `latest` is used. Use `docker compose logs -f bunkr` to watch progress and `docker compose down` when you're finished.
+
+This is the easiest way to run BunkrDownloader. You'll need [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed on your machine (or Docker Engine + Compose on Linux).
+
+1.  **Prepare configuration**:
+    Create a `.env` file to customize your settings.
+    ```bash
+    cp .env.sample .env
+    ```
+    *Windows users: You can copy and rename the file in File Explorer.*
+
+2.  **Customize (Optional)**:
+    Open `.env` in a text editor to change where files are saved (`DOWNLOADS_DIR`) or which port to use (`API_PORT`).
+
+3.  **Start the application**:
+    Run the following command to download the image and start the service in the background:
+    ```bash
+    docker compose up -d
+    ```
+
+    Once running, open [http://localhost:8000](http://localhost:8000) in your browser.
+
+#### Common Operations
+- **Stop**: `docker compose down`
+- **Updates**: Run `docker compose pull` followed by `docker compose up -d` to switch to the latest version.
+- **Logs**: `docker compose logs -f` (Ctrl+C to exit).
+
+#### Environment Variables
+
+You can configure the deployment by setting the following environment variables in your `.env` file.
+
+| Variable | Description | Default Value |
+| :--- | :--- | :--- |
+| `API_PORT` | The host port to access the Web UI and API. | `8000` |
+| `API_HOST` | The host address the application listens on. | `0.0.0.0` |
+| `DOWNLOADS_DIR` | The local directory where files will be saved. | `./Downloads` |
+| `LOGS_DIR` | The local directory where logs will be stored. | `./logs` |
+| `SESSION_LOG_PATH`| The internal path for the session log. | `/app/logs/session.log` |
+| `IMAGE_TAG` | The Docker image version tag to use (e.g., `latest` or `1.2.3`). | `latest` |
+| `UID` | The user ID to run the container as. | `1000` |
+| `GID` | The group ID to run the container as. | `1000` |
+
+Set `IMAGE_TAG` to a published semantic version (for example `1.2.3`) if you want to pin a specific release; otherwise `latest` is used.
 
 ### Local runtime
 ```bash
@@ -111,3 +151,7 @@ This project is a fork of [Lysagxra/BunkrDownloader](https://github.com/Lysagxra
 
 ## License
 MIT License © tekgnosis-net
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=tekgnosis-net/BunkrDownloader&type=Date)](https://star-history.com/#tekgnosis-net/BunkrDownloader&Date)
