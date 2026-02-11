@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## v0.8.0 (2026-02-11)
+
+### Feature
+
+* feat: add Bunkr status page maintenance detection with intelligent retry strategies
+
+- Add refresh_server_status() in bunkr_utils.py with TTL-based caching (60s default)
+- Implement intelligent retry strategies: backoff (2min, 5min, 10min delays) or skip
+- Add --skip-status-check, --status-cache-ttl, --maintenance-strategy CLI flags
+- Add STATUS_CHECK_ON_FAILURE, STATUS_CACHE_TTL_SECONDS, MAINTENANCE_RETRY_STRATEGY env vars
+- Group failed downloads by subdomain for efficient status checks
+- Add log_maintenance_event() for structured logging ([MAINTENANCE] format)
+- Add maintenance_detected WebSocket event with toast notifications in frontend
+- Update docker-compose.yml and README.md with new configuration options
+- Add .github/copilot-instructions.md to .gitignore (local-only file) ([`6a14c6c`](https://github.com/tekgnosis-net/BunkrDownloader/commit/6a14c6c2d2c37ba4d2131b8deeb2cbe2b629cf58))
+
 ## v0.7.1 (2026-02-02)
 
 ### Documentation
