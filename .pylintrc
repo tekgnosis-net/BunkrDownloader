@@ -1,0 +1,9 @@
+[MESSAGES CONTROL]
+# Disable specific warnings that are acceptable for this codebase
+disable=
+    duplicate-code,  # R0801 - Intentional code patterns across downloader modules
+    too-many-return-statements  # R0911 - Complex exception handling requires multiple returns
+
+[DESIGN]
+# Allow up to 8 return statements in functions (default is 6)
+max-returns=8
