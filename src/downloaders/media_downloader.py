@@ -170,7 +170,9 @@ class MediaDownloader:
         # If none of the skip conditions are met, do not skip
         return False
 
-    def _retry_with_backoff(self, attempt: int, *, event: str, maintenance_delay: bool = False) -> bool:
+    def _retry_with_backoff(
+        self, attempt: int, *, event: str, maintenance_delay: bool = False
+    ) -> bool:
         """Log error, apply backoff, and return True if should retry."""
         self.live_manager.update_log(
             event=event,
