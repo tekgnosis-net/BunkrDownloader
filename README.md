@@ -29,7 +29,7 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 ## Highlights
 - **Dual experience**: Python CLI (`downloader.py`, `main.py`) or a Chakra UI dashboard powered by FastAPI.
 - **Realtime feedback**: Rich terminal UI and a websocket + polling hybrid on the web keep progress/logs alive, even after restarts.
-- **Maintenance detection**: Real-time status page checks detect server maintenance and apply intelligent retry strategies with longer delays or skip affected files.
+- **Maintenance detection** 🆕: Real-time status page checks detect server maintenance and apply intelligent retry strategies with longer delays or skip affected files.
 - **Smart filtering**: Include/ignore rules, disk-space guard, filename sanitisation, and album pagination handled automatically.
 - **Configurable storage**: Point downloads to any folder (CLI `--custom-path` or web directory picker) with existing files skipped safely.
 - **Container friendly**: Multi-stage Docker image, docker-compose stack, and CI pipeline for publishing multi-arch images to GHCR.
@@ -77,9 +77,9 @@ You can configure the deployment by setting the following environment variables 
 | `IMAGE_TAG` | The Docker image version tag to use (e.g., `latest` or `1.2.3`). | `latest` |
 | `UID` | The user ID to run the container as. | `1000` |
 | `GID` | The group ID to run the container as. | `1000` |
-| `STATUS_CHECK_ON_FAILURE` | Enable real-time status page checks on download failures. | `true` |
-| `STATUS_CACHE_TTL_SECONDS` | Cache duration for status page results in seconds. | `60` |
-| `MAINTENANCE_RETRY_STRATEGY` | Strategy for maintenance: `backoff` (retry with delays) or `skip` (log and skip). | `backoff` |
+| `STATUS_CHECK_ON_FAILURE` 🆕 | Enable real-time status page checks on download failures. | `true` |
+| `STATUS_CACHE_TTL_SECONDS` 🆕 | Cache duration for status page results in seconds. | `60` |
+| `MAINTENANCE_RETRY_STRATEGY` 🆕 | Strategy for maintenance: `backoff` (retry with delays) or `skip` (log and skip). | `backoff` |
 
 Set `IMAGE_TAG` to a published semantic version (for example `1.2.3`) if you want to pin a specific release; otherwise `latest` is used.
 
@@ -108,9 +108,9 @@ python3 main.py [shared flags]
 - `--ignore` skips files containing any supplied substring.
 - `--custom-path` points downloads to `<path>/Downloads`.
 - `--disable-ui` swaps the Rich interface for plain logging (useful in notebooks/CI).
-- `--skip-status-check` disables real-time status page checks on download failures (defaults to enabled).
-- `--status-cache-ttl SECONDS` controls cache duration for status page results (default: 60s).
-- `--maintenance-strategy backoff|skip` chooses retry behavior: `backoff` retries with longer delays (2min, 5min, 10min), `skip` logs and skips maintenance files.
+- `--skip-status-check` 🆕 disables real-time status page checks on download failures (defaults to enabled).
+- `--status-cache-ttl SECONDS` 🆕 controls cache duration for status page results (default: 60s).
+- `--maintenance-strategy backoff|skip` 🆕 chooses retry behavior: `backoff` retries with longer delays (2min, 5min, 10min), `skip` logs and skips maintenance files.
 
 ## Web Dashboard
 - **Job launcher** – paste URLs, set filters, toggle the disk check, or choose a custom destination via the directory browser.
@@ -124,15 +124,15 @@ python3 main.py [shared flags]
 - `.env` (tracked example) controls container defaults: `API_HOST`, `API_PORT`, `DOWNLOADS_DIR`, plus Vite proxy hints (`VITE_*`).
 - Web UI tooltips describe every form element; hover to see accepted formats and side effects.
 - Downloads default to `Downloads/` in the working directory unless `custom_path` (CLI) or the directory picker overrides it.
-- `session.log` persists problematic URLs so you can retry them later. Maintenance events are logged with format: `[MAINTENANCE] timestamp | subdomain | status | url`.
+- `session.log` persists problematic URLs so you can retry them later. 🆕 Maintenance events are logged with format: `[MAINTENANCE] timestamp | subdomain | status | url`.
 
 ## Architecture
 - `downloader.py` / `main.py` call `validate_and_download`, which builds a `SessionInfo` and streams progress via `LiveManager`.
 - `src/web/app.py` wraps the same flow: `JobEventBroker` buffers events, `WebLiveManager` mirrors CLI progress/log calls, and FastAPI exposes REST + WebSocket endpoints.
 - `src/crawlers/*` resolve album pagination, decrypt media URLs, and normalise filenames.
 - `src/downloaders/*` handle concurrency, retries, and chunked writes through `download_utils.save_file_with_progress`; subdomain outages are tracked with `bunkr_utils`.
-- **Maintenance detection**: `bunkr_utils.refresh_server_status` checks Bunkr's status page on download failures with TTL-based caching. Failed downloads are grouped by subdomain and rechecked before final retries.
-- `frontend/src/App.jsx` consumes `/api/downloads`, `/api/directories`, `/ws/jobs/{id}`, and the `/api/downloads/{id}/events` polling fallback for seamless updates. Maintenance events trigger toast notifications.
+- 🆕 **Maintenance detection**: `bunkr_utils.refresh_server_status` checks Bunkr's status page on download failures with TTL-based caching. Failed downloads are grouped by subdomain and rechecked before final retries.
+- `frontend/src/App.jsx` consumes `/api/downloads`, `/api/directories`, `/ws/jobs/{id}`, and the `/api/downloads/{id}/events` polling fallback for seamless updates. 🆕 Maintenance events trigger toast notifications.
 
 ## Development
 - Python ≥ 3.10, Node ≥ 18 recommended.
