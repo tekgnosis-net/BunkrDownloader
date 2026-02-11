@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## v0.9.0 (2026-02-11)
+
+### Feature
+
+* feat: add .pylintrc to configure acceptable code quality standards
+
+- Disable duplicate-code warnings (R0801) for intentional patterns
+- Disable too-many-return-statements (R0911) for complex exception handling
+- Set max-returns to 8 for methods requiring complex error handling
+- Achieves 10.00/10 pylint rating ([`2e9f941`](https://github.com/tekgnosis-net/BunkrDownloader/commit/2e9f941c6c421d819bb63dd10760a78db152f1a9))
+
 ## v0.8.1 (2026-02-11)
 
 ### Fix
