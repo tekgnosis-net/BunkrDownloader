@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## v0.8.1 (2026-02-11)
+
+### Fix
+
+* fix: split long line in _retry_with_backoff method signature
+
+Break method signature across multiple lines to satisfy 100-char line limit ([`f7caf4e`](https://github.com/tekgnosis-net/BunkrDownloader/commit/f7caf4edc519787caab908928fa63415b2744c49))
+
 ## v0.8.0 (2026-02-11)
 
 ### Feature
