@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .config import (
@@ -45,6 +46,19 @@ def write_on_session_log(content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as file:
         file.write(f"{content}\n")
+
+
+def log_maintenance_event(subdomain: str, status: str, url: str) -> None:
+    """Log maintenance-related events to the session log with a special format.
+
+    Args:
+        subdomain: The subdomain name (e.g., "Cdn13").
+        status: The current status (e.g., "Maintenance", "Operational").
+        url: The URL that was affected.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[MAINTENANCE] {timestamp} | {subdomain} | {status} | {url}"
+    write_on_session_log(log_entry)
 
 
 def format_directory_name(directory_name: str, directory_id: str | None) -> str | None:

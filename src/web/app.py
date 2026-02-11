@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from argparse import Namespace
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -278,6 +279,11 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
             "details": details,
             "timestamp": timestamp,
         }
+
+        # Check if this is a maintenance-related event and emit special event
+        if "maintenance" in event.lower():
+            self._emit_maintenance_event(event, details)
+
         self._run_in_loop(self._broker.publish, payload)
 
     def log_debug(self, *, event: str, details: str) -> None:
@@ -328,6 +334,40 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
             callback(*args)
         else:
             self._loop.call_soon_threadsafe(callback, *args)
+
+    def _emit_maintenance_event(self, event: str, details: str) -> None:
+        """Emit a special maintenance-detected event for the frontend."""
+
+        # Extract subdomain from details if present
+        subdomain = "Unknown"
+        affected_files_count = 1
+        status = "Maintenance"
+
+        # Parse details for structured information
+        if "subdomain" in details.lower() or "cdn" in details.lower():
+            words = details.split()
+            for word in words:
+                if word.startswith("Cdn") or word.startswith("cdn"):
+                    subdomain = word.strip(".,:")
+                    break
+
+        if "file(s)" in details:
+            # Extract count like "5 file(s)"
+            match = re.search(r"(\d+)\s+file\(s\)", details)
+            if match:
+                affected_files_count = int(match.group(1))
+
+        maintenance_payload = {
+            "type": "maintenance_detected",
+            "subdomain": subdomain,
+            "status": status,
+            "affected_files_count": affected_files_count,
+            "event": event,
+            "details": details,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        self._run_in_loop(self._broker.publish, maintenance_payload)
 
 
 @dataclass(slots=True)

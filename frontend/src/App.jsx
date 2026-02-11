@@ -724,6 +724,23 @@ function App() {
           );
         }
         break;
+      case "maintenance_detected":
+        // Handle maintenance events with a toast notification
+        toast({
+          title: "Maintenance Detected",
+          description: `${event.subdomain} is under ${event.status}. ${event.affected_files_count} file(s) affected.`,
+          status: "warning",
+          duration: 10000,
+          isClosable: true,
+          position: "top-right",
+        });
+        // Log the maintenance event
+        pushLogEntry({
+          event: event.event || "Maintenance",
+          details: event.details,
+          timestamp: event.timestamp,
+        });
+        break;
       case "log":
         pushLogEntry(event);
         break;

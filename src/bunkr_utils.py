@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
 from .config import HEADERS, STATUS_PAGE
+
+# Module-level cache for status page results: {cache_key: (fetch_time, status_dict)}
+_status_cache: dict[str, tuple[datetime, dict[str, str]]] = {}
 
 
 def fetch_page(url: str) -> BeautifulSoup | None:
@@ -85,3 +89,46 @@ def mark_subdomain_as_offline(bunkr_status: dict[str, str], download_link: str) 
     subdomain = get_subdomain(download_link)
     bunkr_status[subdomain] = "Non-operational"
     return subdomain
+
+
+def refresh_server_status(
+    subdomain: str,
+    bunkr_status: dict[str, str],
+    cache_ttl_seconds: int = 60,
+) -> tuple[str, bool]:
+    """Refresh the status of a specific subdomain from the status page.
+
+    Args:
+        subdomain: The subdomain name to check (e.g., "Cdn13").
+        bunkr_status: The current status dictionary to update in-place.
+        cache_ttl_seconds: Time-to-live for cached status in seconds.
+
+    Returns:
+        A tuple of (current_status, was_updated) where:
+        - current_status: The latest status string for the subdomain.
+        - was_updated: True if the status was refreshed from the server.
+    """
+    cache_key = "bunkr_status"
+    now = datetime.now()
+
+    # Check cache first
+    if cache_key in _status_cache:
+        fetch_time, cached_status = _status_cache[cache_key]
+        if now - fetch_time < timedelta(seconds=cache_ttl_seconds):
+            # Cache is still valid
+            current_status = cached_status.get(subdomain, "Unknown")
+            if subdomain in cached_status:
+                bunkr_status[subdomain] = cached_status[subdomain]
+            return current_status, False
+
+    # Cache expired or not present, fetch fresh status
+    fresh_status = get_bunkr_status()
+    if fresh_status:
+        _status_cache[cache_key] = (now, fresh_status)
+        # Update the provided dictionary with all fresh data
+        bunkr_status.update(fresh_status)
+        current_status = fresh_status.get(subdomain, "Unknown")
+        return current_status, True
+
+    # Fallback: couldn't fetch fresh status
+    return bunkr_status.get(subdomain, "Unknown"), False

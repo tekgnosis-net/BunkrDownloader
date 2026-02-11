@@ -14,14 +14,24 @@ from typing import TYPE_CHECKING
 import requests
 from requests import RequestException
 
-from src.bunkr_utils import mark_subdomain_as_offline, subdomain_is_offline
+from src.bunkr_utils import (
+    get_subdomain,
+    mark_subdomain_as_offline,
+    refresh_server_status,
+    subdomain_is_offline,
+)
 from src.config import (
     DOWNLOAD_HEADERS,
     DownloadInfo,
     HTTPStatus,
     SessionInfo,
+    STATUS_CHECK_ON_FAILURE,
 )
-from src.file_utils import truncate_filename, write_on_session_log
+from src.file_utils import (
+    log_maintenance_event,
+    truncate_filename,
+    write_on_session_log,
+)
 
 from .download_utils import save_file_with_progress
 
@@ -160,7 +170,7 @@ class MediaDownloader:
         # If none of the skip conditions are met, do not skip
         return False
 
-    def _retry_with_backoff(self, attempt: int, *, event: str) -> bool:
+    def _retry_with_backoff(self, attempt: int, *, event: str, maintenance_delay: bool = False) -> bool:
         """Log error, apply backoff, and return True if should retry."""
         self.live_manager.update_log(
             event=event,
@@ -169,7 +179,15 @@ class MediaDownloader:
         )
 
         if attempt < self.retries - 1:
-            delay = 3 ** (attempt + 1) + random.uniform(1, 3)  # noqa: S311
+            if maintenance_delay:
+                # Longer delays for maintenance: 2min, 5min, 10min
+                delay_minutes = [2, 5, 10]
+                delay = delay_minutes[min(attempt, len(delay_minutes) - 1)] * 60
+                delay += random.uniform(1, 10)  # noqa: S311
+            else:
+                # Standard exponential backoff
+                delay = 3 ** (attempt + 1) + random.uniform(1, 3)  # noqa: S311
+
             time.sleep(delay)
             return True
 
@@ -184,8 +202,82 @@ class MediaDownloader:
             or req_err.response.status_code == HTTPStatus.SERVER_DOWN
         )
 
-        # Mark the subdomain as offline and exit the loop
+        # Mark the subdomain as offline and potentially retry based on status check
         if is_server_down:
+            subdomain = get_subdomain(self.download_info.download_link)
+
+            # Check if status checking is enabled and not explicitly disabled
+            skip_status_check = getattr(
+                self.session_info.args, "skip_status_check", False
+            ) if self.session_info.args else False
+
+            if STATUS_CHECK_ON_FAILURE and not skip_status_check:
+                # Fetch real-time status from the status page
+                cache_ttl = getattr(
+                    self.session_info.args, "status_cache_ttl", 60
+                ) if self.session_info.args else 60
+
+                current_status, was_updated = refresh_server_status(
+                    subdomain,
+                    self.session_info.bunkr_status,
+                    cache_ttl_seconds=cache_ttl,
+                )
+
+                status_check_msg = "(refreshed)" if was_updated else "(cached)"
+
+                # Check if server is under maintenance
+                if "Maintenance" in current_status or "maintenance" in current_status.lower():
+                    # Log maintenance event to session log
+                    log_maintenance_event(
+                        subdomain, current_status, self.download_info.download_link
+                    )
+
+                    self.live_manager.update_log(
+                        event="Maintenance detected",
+                        details=(
+                            f"{subdomain} is under maintenance {status_check_msg}: "
+                            f"{current_status}. File {self.download_info.filename} "
+                            f"will be retried."
+                        ),
+                    )
+
+                    # Get maintenance strategy
+                    maintenance_strategy = getattr(
+                        self.session_info.args, "maintenance_strategy", "backoff"
+                    ) if self.session_info.args else "backoff"
+
+                    if maintenance_strategy == "skip":
+                        # Log and skip this file
+                        self.live_manager.update_log(
+                            event="Maintenance skip",
+                            details=(
+                                f"Skipping {self.download_info.filename} due to "
+                                f"maintenance (strategy: skip)."
+                            ),
+                        )
+                        return False
+
+                    # Use backoff strategy with longer delays for maintenance
+                    return self._retry_with_backoff(
+                        attempt,
+                        event="Waiting for maintenance",
+                        maintenance_delay=True
+                    )
+
+                # Status page says operational but we got 521 - transient issue
+                if current_status == "Operational":
+                    self.live_manager.update_log(
+                        event="Transient error",
+                        details=(
+                            f"{subdomain} reported operational {status_check_msg} "
+                            f"but returned 521. Retrying {self.download_info.filename}..."
+                        ),
+                    )
+                    return self._retry_with_backoff(
+                        attempt, event="Retrying transient failure"
+                    )
+
+            # Fallback: mark as offline and don't retry
             marked_subdomain = mark_subdomain_as_offline(
                 self.session_info.bunkr_status,
                 self.download_info.download_link,
@@ -203,6 +295,42 @@ class MediaDownloader:
             return self._retry_with_backoff(attempt, event="Retrying download")
 
         if req_err.response.status_code == HTTPStatus.BAD_GATEWAY:
+            # Check status on 502 errors as well
+            skip_status_check = getattr(
+                self.session_info.args, "skip_status_check", False
+            ) if self.session_info.args else False
+
+            if STATUS_CHECK_ON_FAILURE and not skip_status_check:
+                subdomain = get_subdomain(self.download_info.download_link)
+                cache_ttl = getattr(
+                    self.session_info.args, "status_cache_ttl", 60
+                ) if self.session_info.args else 60
+
+                current_status, _ = refresh_server_status(
+                    subdomain,
+                    self.session_info.bunkr_status,
+                    cache_ttl_seconds=cache_ttl,
+                )
+
+                if "Maintenance" in current_status or "maintenance" in current_status.lower():
+                    # Log maintenance event to session log
+                    log_maintenance_event(
+                        subdomain, current_status, self.download_info.download_link
+                    )
+
+                    self.live_manager.update_log(
+                        event="Maintenance detected (502)",
+                        details=(
+                            f"{subdomain} maintenance during bad gateway for "
+                            f"{self.download_info.filename}."
+                        ),
+                    )
+                    return self._retry_with_backoff(
+                        attempt,
+                        event="Waiting for maintenance",
+                        maintenance_delay=True
+                    )
+
             self.live_manager.update_log(
                 event="Server error",
                 details=f"Bad gateway for {self.download_info.filename}.",

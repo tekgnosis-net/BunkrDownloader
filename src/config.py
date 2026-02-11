@@ -95,6 +95,14 @@ LOG_MANAGER_CONFIG = {
 MAX_FILENAME_LEN = 120  # The maximum length for a file name.
 MAX_WORKERS = 3         # The maximum number of threads for concurrent downloads.
 
+# Status page checking behavior
+STATUS_CHECK_ON_FAILURE = (
+    os.getenv("STATUS_CHECK_ON_FAILURE", "true").lower() == "true"
+)
+STATUS_CACHE_TTL_SECONDS = int(os.getenv("STATUS_CACHE_TTL_SECONDS", "60"))
+# Strategy: 'backoff' (retry with delays) or 'skip' (log and skip)
+MAINTENANCE_RETRY_STRATEGY = os.getenv("MAINTENANCE_RETRY_STRATEGY", "backoff")
+
 # Mapping of URL identifiers to a boolean for album (True) vs single file (False).
 URL_TYPE_MAPPING = {"a": True, "f": False, "i": False, "v": False}
 
@@ -309,6 +317,29 @@ def add_common_arguments(parser: ArgumentParser) -> None:
         type=str,
         default=FALLBACK_DOMAIN,
         help="Fallback Bunkr domain used after 403 responses (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--skip-status-check",
+        action="store_true",
+        help="Disable real-time status page checks on download failures.",
+    )
+    parser.add_argument(
+        "--status-cache-ttl",
+        type=int,
+        default=STATUS_CACHE_TTL_SECONDS,
+        help=(
+            "Cache duration for status page results in seconds "
+            "(default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--maintenance-strategy",
+        choices=["backoff", "skip"],
+        default=MAINTENANCE_RETRY_STRATEGY,
+        help=(
+            "Strategy for handling maintenance: 'backoff' retries with delays, "
+            "'skip' logs and skips (default: %(default)s)."
+        ),
     )
 
 

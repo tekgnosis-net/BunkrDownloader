@@ -6,8 +6,10 @@ integrating with live task displays.
 
 import asyncio
 from asyncio import Semaphore
+from collections import defaultdict
 
-from src.config import MAX_WORKERS, AlbumInfo, DownloadInfo, SessionInfo
+from src.bunkr_utils import get_subdomain, refresh_server_status
+from src.config import MAX_WORKERS, AlbumInfo, DownloadInfo, SessionInfo, STATUS_CHECK_ON_FAILURE
 from src.crawlers.crawler_utils import get_download_info
 from src.general_utils import fetch_page
 from src.managers.live_manager import LiveManager
@@ -107,11 +109,70 @@ class AlbumDownloader:
         await asyncio.to_thread(media_downloader.download)
 
     async def _process_failed_downloads(self) -> None:
-        """Process any failed downloads after the initial attempt."""
+        """Process any failed downloads after the initial attempt.
+
+        Groups failed downloads by subdomain and checks server status
+        before retrying to handle maintenance scenarios intelligently.
+        """
+        if not self.failed_downloads:
+            return
+
+        # Check if status checking is enabled
+        skip_status_check = getattr(
+            self.session_info.args, "skip_status_check", False
+        ) if self.session_info.args else False
+
+        # Group failed downloads by subdomain
+        subdomain_groups: dict[str, list[dict]] = defaultdict(list)
         for data in self.failed_downloads:
-            await self._retry_failed_download(
-                data["id"],
-                data["filename"],
-                data["download_link"],
-            )
+            subdomain = get_subdomain(data["download_link"])
+            subdomain_groups[subdomain].append(data)
+
+        # Process each subdomain group
+        for subdomain, downloads_group in subdomain_groups.items():
+            # Check status for this subdomain before retrying
+            if STATUS_CHECK_ON_FAILURE and not skip_status_check:
+                cache_ttl = getattr(
+                    self.session_info.args, "status_cache_ttl", 60
+                ) if self.session_info.args else 60
+
+                current_status, _ = refresh_server_status(
+                    subdomain,
+                    self.session_info.bunkr_status,
+                    cache_ttl_seconds=cache_ttl,
+                )
+
+                # Check if subdomain is still under maintenance
+                if "Maintenance" in current_status or "maintenance" in current_status.lower():
+                    maintenance_strategy = getattr(
+                        self.session_info.args, "maintenance_strategy", "backoff"
+                    ) if self.session_info.args else "backoff"
+
+                    if maintenance_strategy == "skip":
+                        # Skip all files from this subdomain
+                        self.live_manager.update_log(
+                            event="Maintenance skip (retry phase)",
+                            details=(
+                                f"Skipping {len(downloads_group)} file(s) from {subdomain} "
+                                f"due to ongoing maintenance (strategy: skip)."
+                            ),
+                        )
+                        continue  # Skip to next subdomain
+
+                    self.live_manager.update_log(
+                        event="Maintenance retry",
+                        details=(
+                            f"Retrying {len(downloads_group)} file(s) from {subdomain} "
+                            f"despite maintenance status: {current_status}"
+                        ),
+                    )
+
+            # Retry all downloads from this subdomain
+            for data in downloads_group:
+                await self._retry_failed_download(
+                    data["id"],
+                    data["filename"],
+                    data["download_link"],
+                )
+
         self.failed_downloads.clear()
