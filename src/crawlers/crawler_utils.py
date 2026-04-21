@@ -90,9 +90,18 @@ async def get_item_download_link(
     soup: BeautifulSoup | None = None,
     *,
     network: NetworkContext | None = None,
-) -> str:
-    """Retrieve the download link for a specific item from its HTML content."""
+) -> str | None:
+    """Retrieve the download link for a specific item from its HTML content.
+
+    Returns ``None`` when the upstream API call fails (network error,
+    non-200 response) so callers can distinguish between "item has no
+    download" and "couldn't reach the API". Previously this path passed
+    ``None`` straight into :func:`decrypt_url`, which indexed into it and
+    raised a confusing ``TypeError`` deep inside the crawler.
+    """
     api_response = get_api_response(item_url, soup=soup, network=network)
+    if api_response is None:
+        return None
     return decrypt_url(api_response)
 
 
@@ -106,13 +115,17 @@ def get_item_filename(item_soup: BeautifulSoup) -> str:
     return item_filename.encode("latin1").decode("utf-8")
 
 
-def format_item_filename(original_filename: str, url_based_filename: str) -> str:
+def format_item_filename(
+    original_filename: str,
+    url_based_filename: str | None,
+) -> str:
     """Combine two filenames while preserving the extension of the first.
 
-    If the filenames are identical, returns the first filename.
-    If the base of the first filename is found within the second, returns the second
-    filename. Otherwise, combines both bases with a hyphen.
+    When ``url_based_filename`` is ``None`` (the Bunkr API failed upstream so
+    we never resolved a CDN link) the original filename is returned as-is.
     """
+    if url_based_filename is None:
+        return original_filename
     if original_filename == url_based_filename:
         return original_filename
 

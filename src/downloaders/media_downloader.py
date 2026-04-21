@@ -90,6 +90,11 @@ class MediaDownloader:
                     self.download_info.task,
                     self.live_manager,
                     download_url=self.download_info.download_link,
+                    # Propagate per-job headers so the HEAD probe used for
+                    # unknown-length downloads matches the streaming GET's
+                    # user-agent / referer — otherwise a different CDN
+                    # response can land in the content-length backfill.
+                    download_headers=download_headers,
                 )
                 return outcome is not DownloadOutcome.SUCCESS
 

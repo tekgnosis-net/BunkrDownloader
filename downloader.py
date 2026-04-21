@@ -93,6 +93,15 @@ async def handle_download_process(
         download_link, filename = await get_download_info(
             url, initial_soup, network=session_info.network,
         )
+        if not download_link:
+            # Bunkr API failed (network error, non-200 response) — mirror the
+            # album-path behaviour of skipping rather than passing None into
+            # requests.get and blowing up with a cryptic TypeError.
+            live_manager.update_log(
+                event="Download link unresolved",
+                details=f"Could not resolve a download URL for {filename or url}",
+            )
+            return
         live_manager.add_overall_task(identifier, num_tasks=1)
         task = live_manager.add_task()
 

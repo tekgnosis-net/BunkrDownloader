@@ -37,10 +37,10 @@ class FakeResponse:  # pylint: disable=too-few-public-methods
         self.raw = _FakeRaw(raw_remaining)
         self._raises = raises
 
-    def iter_content(self, chunk_size: int | None = None):  # noqa: D401
+    def iter_content(self, chunk_size: int | None = None):
+        """Stream pre-set chunks, then optionally raise to simulate a mid-stream error."""
         del chunk_size
-        for chunk in self._chunks:
-            yield chunk
+        yield from self._chunks
         if self._raises:
             raise self._raises("simulated mid-stream failure")
 
@@ -55,7 +55,9 @@ def test_save_file_with_progress_known_length_completes(
     response = FakeResponse(chunks, headers={"Content-Length": str(total)})
     dest = tmp_path / "file.bin"
 
-    outcome = save_file_with_progress(response, str(dest), task=0, progress_manager=fake_live_manager)
+    outcome = save_file_with_progress(
+        response, str(dest), task=0, progress_manager=fake_live_manager,
+    )
 
     assert outcome is DownloadOutcome.SUCCESS
     # Final update lands on completed=100
@@ -76,7 +78,9 @@ def test_save_file_with_progress_chunked_encoding_hides_task(
     )
     dest = tmp_path / "chunked.bin"
 
-    outcome = save_file_with_progress(response, str(dest), task=0, progress_manager=fake_live_manager)
+    outcome = save_file_with_progress(
+        response, str(dest), task=0, progress_manager=fake_live_manager,
+    )
 
     assert outcome is DownloadOutcome.RETRYABLE_FAILURE
     hidden = [u for _, u in fake_live_manager.task_updates if u["visible"] is False]

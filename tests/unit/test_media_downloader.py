@@ -83,7 +83,7 @@ def _fake_request_exception(status_code: int | None) -> RequestException:
         (HTTPStatus.INTERNAL_ERROR, "Operational", "backoff", False),
     ],
 )
-def test_handle_request_exception_branches(
+def test_handle_request_exception_branches(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     fake_live_manager,
     tmp_path: Path,
     status_code,

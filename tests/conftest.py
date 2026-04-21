@@ -1,5 +1,8 @@
 """Shared pytest fixtures for BunkrDownloader tests."""
 
+# Fixture doubles are intentionally thin; pylint's docstring + unused-arg
+# checks add noise without improving safety here.
+# pylint: disable=missing-function-docstring,unused-argument,redefined-outer-name
 from __future__ import annotations
 
 from pathlib import Path

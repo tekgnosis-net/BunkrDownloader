@@ -70,13 +70,25 @@ def _extract_response_length(response: Response) -> int | None:
     return None
 
 
-def _head_content_length(download_url: str, *, timeout: float = 5.0) -> int | None:
-    """Best-effort HEAD request used to infer missing content lengths."""
+def _head_content_length(
+    download_url: str,
+    *,
+    timeout: float = 5.0,
+    headers: dict[str, str] | None = None,
+) -> int | None:
+    """Best-effort HEAD request used to infer missing content lengths.
 
+    The effective ``headers`` must match those used by the streaming GET
+    (user-agent, referer) — some CDNs serve different responses based on
+    those, so probing with module-global defaults while the download uses
+    a per-job override would give inconsistent lengths.
+    """
+
+    effective_headers = headers if headers is not None else DOWNLOAD_HEADERS
     try:
         head_resp = requests.head(
             download_url,
-            headers=DOWNLOAD_HEADERS,
+            headers=effective_headers,
             timeout=timeout,
             allow_redirects=True,
         )
@@ -90,6 +102,8 @@ def _head_content_length(download_url: str, *, timeout: float = 5.0) -> int | No
 def _resolve_content_length(
     response: Response,
     download_url: str | None,
+    *,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int | None, Future[int | None] | None, ThreadPoolExecutor | None]:
     """Determine an expected content length and return any async fallback."""
 
@@ -98,7 +112,7 @@ def _resolve_content_length(
         return length, None, None
 
     executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(_head_content_length, download_url)
+    future = executor.submit(_head_content_length, download_url, headers=headers)
     return None, future, executor
 
 
@@ -203,22 +217,28 @@ def _finalise_download(
 # pylint: enable=too-many-arguments
 
 
-def save_file_with_progress(
+def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-arguments
     response: Response,
     download_path: str,
     task: int,
     progress_manager: ProgressManager,
     *,
     download_url: str | None = None,
-) -> DownloadOutcome:  # pylint: disable=too-many-locals
+    download_headers: dict[str, str] | None = None,
+) -> DownloadOutcome:
     """Save the file from the response to the specified path.
 
     Adds a `.temp` extension for in-flight downloads and attempts to infer the
     content length so live progress can be reported accurately. When the server
     omits the header, a best-effort estimate is used so the UI still reflects
-    activity while streaming.
+    activity while streaming. The optional ``download_headers`` are forwarded
+    to the HEAD probe so the content-length backfill uses the same user-agent
+    and referer as the streaming GET — otherwise per-job ``NetworkContext``
+    overrides would be silently ignored for unknown-length files.
     """
-    file_size, head_future, head_executor = _resolve_content_length(response, download_url)
+    file_size, head_future, head_executor = _resolve_content_length(
+        response, download_url, headers=download_headers,
+    )
     if file_size is None:
         logging.warning("Content length unavailable for %s", download_path)
         _log_once(

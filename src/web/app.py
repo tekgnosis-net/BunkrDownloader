@@ -177,6 +177,20 @@ class JobEventBroker:
 
         return self._event_seq + 1
 
+    @property
+    def last_event_id(self) -> int:
+        """Return the highest ``event_id`` published so far (0 if none).
+
+        This is the value a client passes as ``since`` on its next backfill
+        request — ``/events`` returns envelopes with ``event_id > since``, so
+        ``since = last_event_id`` yields only envelopes published afterwards.
+        Kept aligned with the ``next_id`` field that ``/events`` emits, so the
+        WebSocket ``hello`` frame and the HTTP polling endpoint agree on what
+        the cursor means.
+        """
+
+        return self._event_seq
+
     def publish(self, event: dict[str, Any]) -> None:
         """Publish an event, marshaling to the bound loop when called off-thread."""
 
@@ -768,10 +782,16 @@ async def job_updates(websocket: WebSocket, job_id: str) -> None:
         return
 
     await websocket.accept()
+    # Send the LAST broadcast event_id, not the next one. /events treats
+    # ``since`` as "envelopes with event_id > since", so a client that
+    # echoes this value on its next HTTP backfill picks up cleanly from
+    # the first unseen event. Using ``next_event_id`` here would silently
+    # skip one envelope on every reconnect.
+    hello_cursor = job.event_broker.last_event_id
     hello_envelope = {
         "type": "hello",
-        "next_id": job.event_broker.next_event_id,
-        "next_index": job.event_broker.next_event_id,
+        "next_id": hello_cursor,
+        "next_index": hello_cursor,
         "ts": datetime.now(timezone.utc).isoformat(),
     }
     try:

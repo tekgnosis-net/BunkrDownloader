@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 from src.web.app import app as fastapi_app
 
 
-async def _fake_validate(bunkr_status, url, manager, args=None):  # noqa: ARG001
+# Signature mirrors validate_and_download so the keyword-only call site
+# from _run_download_job keeps working.
+async def _fake_validate(bunkr_status, url, manager, args=None):  # pylint: disable=unused-argument
     manager.add_overall_task("fake-album", num_tasks=1)
     task = manager.add_task(current_task=0)
     for pct in (25, 50, 75, 100):
@@ -41,7 +43,10 @@ def test_event_envelope_shape_and_cursor_alias() -> None:
         patch("src.web.app.get_bunkr_status_cached", return_value={}),
         TestClient(fastapi_app) as client,
     ):
-        resp = client.post("/api/downloads", json={"urls": ["https://bunkr.test/a/abc"]})
+        resp = client.post(
+            "/api/downloads",
+            json={"urls": ["https://bunkr.test/a/abc"]},
+        )
         job_id = resp.json()["job_id"]
 
         events = _drain(client, job_id, min_events=4)
@@ -63,7 +68,10 @@ def test_ws_hello_frame_precedes_replay() -> None:
         patch("src.web.app.get_bunkr_status_cached", return_value={}),
         TestClient(fastapi_app) as client,
     ):
-        job_id = client.post("/api/downloads", json={"urls": ["https://bunkr.test/a/x"]}).json()["job_id"]
+        job_id = client.post(
+            "/api/downloads",
+            json={"urls": ["https://bunkr.test/a/x"]},
+        ).json()["job_id"]
         time.sleep(0.2)
         with client.websocket_connect(f"/ws/jobs/{job_id}") as ws:
             first = ws.receive_json()
@@ -80,8 +88,14 @@ def test_parallel_jobs_do_not_cross_contaminate_events() -> None:
         patch("src.web.app.get_bunkr_status_cached", return_value={}),
         TestClient(fastapi_app) as client,
     ):
-        job_a = client.post("/api/downloads", json={"urls": ["https://bunkr.test/a/1"]}).json()["job_id"]
-        job_b = client.post("/api/downloads", json={"urls": ["https://bunkr.test/a/2"]}).json()["job_id"]
+        job_a = client.post(
+            "/api/downloads",
+            json={"urls": ["https://bunkr.test/a/1"]},
+        ).json()["job_id"]
+        job_b = client.post(
+            "/api/downloads",
+            json={"urls": ["https://bunkr.test/a/2"]},
+        ).json()["job_id"]
 
         time.sleep(0.3)
         events_a = client.get(f"/api/downloads/{job_a}/events").json()["events"]
