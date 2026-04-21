@@ -5,9 +5,20 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Bunkr Downloader</title>
+    <!-- Default to dark mode so the first paint has a liquid-glass look that matches Chakra's initialColorMode. ThemeProvider keeps this in sync on mode toggle. -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem("chakra-ui-color-mode");
+          document.documentElement.setAttribute("data-theme", saved === "light" ? "light" : "dark");
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
