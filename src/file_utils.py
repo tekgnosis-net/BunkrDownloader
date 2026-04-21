@@ -154,6 +154,30 @@ def remove_invalid_characters(text: str) -> str:
     return re.sub(VALID_CHARACTERS_REGEX, "", text)
 
 
+_LEADING_ALNUM_RUN = re.compile(r"^[A-Za-z0-9]+")
+_MAX_EXTENSION_LEN = 16  # typical real extensions top out well below this
+
+
+def _sanitize_extension(extension: str) -> str:
+    """Normalise a filename extension to a safe whitelist.
+
+    Keeps only the leading run of alphanumerics after the dot, truncated to
+    :data:`_MAX_EXTENSION_LEN`. Stops at the first non-alnum character so
+    scraped-URL residue like ``".jpg?width=1024"`` or Windows-hostile
+    ``".jp:g"`` collapses to ``".jpg"`` rather than concatenating the
+    gibberish tail. Returns an empty string when nothing survives.
+    """
+
+    if not extension:
+        return ""
+    body = extension[1:] if extension.startswith(".") else extension
+    match = _LEADING_ALNUM_RUN.match(body)
+    if not match:
+        return ""
+    safe = match.group(0)[:_MAX_EXTENSION_LEN]
+    return f".{safe}"
+
+
 def truncate_filename(filename: str) -> str:
     """Return a sanitised, flattened filename for on-disk storage.
 
@@ -161,7 +185,9 @@ def truncate_filename(filename: str) -> str:
     so an attacker-controlled value like ``"../evil/pwn.jpg"`` collapses to
     ``"pwn.jpg"`` rather than surviving a path traversal through the later
     ``download_path / formatted_filename`` join. The result is always a flat
-    filename — no separators, no parent-directory markers.
+    filename — no separators, no parent-directory markers — and is
+    guaranteed to be ``<= MAX_FILENAME_LEN`` bytes so filesystems that
+    impose name-length limits don't error on writes.
     """
 
     # Take only the terminal component so ``..`` / ``/`` / ``\\`` segments
@@ -171,13 +197,16 @@ def truncate_filename(filename: str) -> str:
     extension = Path(terminal).suffix
 
     safe_stem = remove_invalid_characters(stem)
-    if len(safe_stem) > MAX_FILENAME_LEN - len(extension):
-        safe_stem = safe_stem[: MAX_FILENAME_LEN - len(extension)]
+    safe_ext = _sanitize_extension(extension)
 
-    # Defensive: ``remove_invalid_characters`` already strips everything but
-    # ``[A-Za-z0-9 _-]`` so the extension is the only remaining risk surface.
-    # Reject any extension that still contains traversal markers.
-    if ".." in extension or "/" in extension or "\\" in extension:
-        extension = ""
+    # When the sanitised extension alone meets or exceeds the limit, drop
+    # it entirely — keeping a truncated middle of the extension would
+    # produce nonsense like ``.jpegjpegjp`` and still risk overrun.
+    if len(safe_ext) >= MAX_FILENAME_LEN:
+        safe_ext = ""
 
-    return f"{safe_stem}{extension}"
+    budget = MAX_FILENAME_LEN - len(safe_ext)
+    if len(safe_stem) > budget:
+        safe_stem = safe_stem[:budget]
+
+    return f"{safe_stem}{safe_ext}"

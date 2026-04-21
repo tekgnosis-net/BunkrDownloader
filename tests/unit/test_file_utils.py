@@ -43,6 +43,40 @@ class TestTruncateFilename:
         assert result.endswith(".jpg")
         assert len(result) <= 120  # MAX_FILENAME_LEN
 
+    def test_extension_with_query_string_is_sanitised(self) -> None:
+        """Regression for PR2 review: ``.jpg?x=1`` must not survive to disk.
+
+        Windows and macOS reject ``?`` in filenames; the old defensive
+        check only caught traversal markers, so query-string residue from
+        scraped URLs could land in ``final_path`` and crash the write.
+        """
+
+        result = truncate_filename("photo.jpg?width=1024")
+        assert "?" not in result
+        assert "=" not in result
+        assert result.endswith(".jpg")
+
+    def test_extension_strips_os_invalid_characters(self) -> None:
+        """Colons, asterisks, and pipes are dropped from the extension."""
+
+        result = truncate_filename("foo.jp:g|bar")
+        assert ":" not in result
+        assert "|" not in result
+
+    def test_result_always_within_max_length(self) -> None:
+        """Even a pathological long extension cannot push the name past the cap."""
+
+        # Extension body of 500 chars → after sanitise/cap it stays well inside
+        # MAX_FILENAME_LEN rather than overrunning it.
+        result = truncate_filename("short." + "x" * 500)
+        assert len(result) <= 120
+
+    def test_extension_only_alnum_survives(self) -> None:
+        """The whitelist keeps letters/digits in the extension and drops the rest."""
+
+        result = truncate_filename("pic.JPEG2000")
+        assert result.endswith(".JPEG2000")
+
 
 class TestResolveWithinAllowedRoot:
     """The web handlers depend on this to sandbox custom_path / basePath."""

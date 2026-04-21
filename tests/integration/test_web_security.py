@@ -62,6 +62,51 @@ class TestPathSandbox:
             assert resp.status_code == 200, resp.text
             assert any("nested" in d for d in resp.json()["directories"])
 
+    def test_custom_path_parent_of_root_accepted_when_effective_is_inside(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ) -> None:
+        """Regression for PR2 review: validate the EFFECTIVE path, not the raw value.
+
+        ``create_download_directory`` appends ``DOWNLOAD_FOLDER`` to
+        ``custom_path``, so the legitimate ``custom_path=<root parent>``
+        (which yields ``<root>/Downloads`` after the join) must be
+        accepted. Checking only the raw ``custom_path`` previously
+        rejected this as "outside allowed root".
+        """
+
+        # Sandbox root is ``tmp_path / "Downloads"``; passing ``tmp_path``
+        # as custom_path should be fine because the effective download
+        # directory is ``tmp_path / "Downloads"`` — equal to the root.
+        download_root = tmp_path / "Downloads"
+        download_root.mkdir()
+        monkeypatch.setattr(
+            "src.file_utils.ALLOWED_DOWNLOAD_ROOT", str(download_root),
+        )
+        monkeypatch.setattr(
+            "src.web.app.ALLOWED_DOWNLOAD_ROOT", str(download_root),
+        )
+
+        async def _noop(bunkr_status, url, manager, args=None):  # noqa: ARG001
+            pass
+
+        with (
+            patch("src.web.app.validate_and_download", side_effect=_noop),
+            patch("src.web.app.get_bunkr_status_cached", return_value={}),
+            TestClient(fastapi_app) as client,
+        ):
+            resp = client.post(
+                "/api/downloads",
+                json={
+                    "urls": ["https://bunkr.test/a/x"],
+                    "custom_path": str(tmp_path),
+                },
+            )
+            # ``tmp_path`` alone is a parent of the sandbox root, but after
+            # the ``/Downloads`` join it equals the root — must be accepted.
+            assert resp.status_code == 200, resp.text
+
 
 class TestBearerAuth:
     """``require_auth`` reads ``API_ACCESS_TOKEN`` at call time via module lookup."""

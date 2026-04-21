@@ -33,6 +33,7 @@ from src.config import (
     ALLOWED_ORIGIN_REGEX,
     ALLOWED_ORIGINS,
     API_ACCESS_TOKEN,
+    DOWNLOAD_FOLDER,
     JOB_EVENT_RETENTION,
     JOB_REAPER_INTERVAL_SECONDS,
     JOB_TTL_HOURS,
@@ -831,9 +832,17 @@ async def start_download(request: DownloadRequest) -> DownloadResponse:
     # Sandbox custom_path before accepting the job: a malicious or mistyped
     # absolute path otherwise writes anywhere the container process can
     # reach. Configurable via the ALLOWED_DOWNLOAD_ROOT env var.
+    #
+    # Validate the EFFECTIVE destination — ``create_download_directory``
+    # appends ``DOWNLOAD_FOLDER`` to whatever ``custom_path`` the caller
+    # sent. Checking only the raw value rejected ``custom_path=<root
+    # parent>`` (which would legitimately resolve to ``<root>/Downloads``
+    # after the join) while accepting values that escape through the
+    # join. Validating ``custom_path / DOWNLOAD_FOLDER`` eliminates both.
     if request.custom_path:
         try:
-            resolve_within_allowed_root(request.custom_path)
+            effective = Path(request.custom_path) / DOWNLOAD_FOLDER
+            resolve_within_allowed_root(str(effective))
         except PathOutsideSandboxError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
