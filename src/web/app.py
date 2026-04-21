@@ -1,12 +1,17 @@
 """FastAPI entrypoint that mirrors the CLI downloader for the web dashboard."""
 
+# The module hit pylint's too-many-lines threshold after PR2 added the ring
+# buffer, reaper, path sandbox, auth, and CORS pieces. Splitting is PR3 work.
+# pylint: disable=too-many-lines
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import secrets
 import threading
 from argparse import Namespace
+from collections import deque
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -15,7 +20,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, AnyHttpUrl
@@ -23,7 +28,20 @@ from pydantic import BaseModel, Field, AnyHttpUrl
 from downloader import validate_and_download
 from src import __version__ as __app_version__
 from src.bunkr_utils import get_bunkr_status_cached
-from src.config import MAX_WORKERS, build_network_context, get_network_settings
+from src.config import (
+    ALLOWED_DOWNLOAD_ROOT,
+    ALLOWED_ORIGIN_REGEX,
+    ALLOWED_ORIGINS,
+    API_ACCESS_TOKEN,
+    DOWNLOAD_FOLDER,
+    JOB_EVENT_RETENTION,
+    JOB_REAPER_INTERVAL_SECONDS,
+    JOB_TTL_HOURS,
+    MAX_WORKERS,
+    build_network_context,
+    get_network_settings,
+)
+from src.file_utils import PathOutsideSandboxError, resolve_within_allowed_root
 
 _env_version = os.getenv("APP_VERSION", "")
 if _env_version and _env_version.lower() != "latest":
@@ -131,9 +149,15 @@ class JobEventBroker:
     context (e.g. in unit tests).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, retention: int | None = None) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._events: list[dict[str, Any]] = []
+        # deque with maxlen so long-running jobs don't grow the buffer forever;
+        # pruning is silent from the broker's perspective — callers that ask
+        # for an event_id below the retained floor get a 410 from the HTTP
+        # layer so they know to reset rather than silently miss history.
+        self._events: deque[dict[str, Any]] = deque(
+            maxlen=retention if retention is not None else JOB_EVENT_RETENTION,
+        )
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._id_lock = threading.Lock()
         self._event_seq = 0
@@ -190,6 +214,20 @@ class JobEventBroker:
         """
 
         return self._event_seq
+
+    @property
+    def oldest_event_id(self) -> int | None:
+        """Return the ``event_id`` of the oldest retained envelope, or None.
+
+        Consumers compare this against a client-supplied ``since`` cursor to
+        detect when the ring buffer has pruned events the client has not yet
+        observed — a state that requires the client to reset its view rather
+        than silently continue with a gap.
+        """
+
+        if not self._events:
+            return None
+        return self._events[0].get("event_id")
 
     def publish(self, event: dict[str, Any]) -> None:
         """Publish an event, marshaling to the bound loop when called off-thread."""
@@ -501,6 +539,13 @@ class Job:  # pylint: disable=too-many-instance-attributes
         }
 
 
+_TERMINAL_STATUSES = frozenset({
+    JobStatus.COMPLETED,
+    JobStatus.FAILED,
+    JobStatus.CANCELLED,
+})
+
+
 class JobStore:
     """In-memory registry for active and completed jobs."""
 
@@ -523,6 +568,55 @@ class JobStore:
         """Return a snapshot of all jobs currently tracked."""
 
         return list(self._jobs.values())
+
+    async def reap(self, ttl_hours: int, now: datetime | None = None) -> list[str]:
+        """Evict terminal jobs older than ``ttl_hours``. Returns removed ids.
+
+        The lock is held for the scan-and-delete phase so in-flight writers
+        never race with eviction. Active jobs (pending/running) are never
+        reaped regardless of age.
+        """
+
+        current = now or datetime.now(timezone.utc)
+        cutoff = current - timedelta(hours=ttl_hours)
+        removed: list[str] = []
+        async with self._lock:
+            for job_id, job in list(self._jobs.items()):
+                if job.status in _TERMINAL_STATUSES and job.created_at < cutoff:
+                    del self._jobs[job_id]
+                    removed.append(job_id)
+        return removed
+
+
+async def _job_reaper(
+    store: "JobStore",
+    *,
+    ttl_hours: int,
+    interval_seconds: int,
+) -> None:
+    """Background loop that reaps stale jobs until cancelled.
+
+    Scheduled inside the lifespan context so the task stops cleanly on app
+    shutdown. Failures inside ``reap`` are logged and swallowed — the reaper
+    is best-effort and must not kill itself on a transient error.
+    """
+
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            removed = await store.reap(ttl_hours=ttl_hours)
+            if removed:
+                logger.info(
+                    "Reaped %d terminal jobs older than %d hours", len(removed), ttl_hours,
+                )
+        except asyncio.CancelledError:  # pylint: disable=try-except-raise
+            # Explicit re-raise prevents the broad ``Exception`` catch-all
+            # below from swallowing cancellation — without this, a cancel
+            # that lands during logging / reap would become a silent
+            # continue-loop and the task would never stop.
+            raise
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.exception("Job reaper tick failed")
 
 
 job_store = JobStore()
@@ -628,26 +722,100 @@ async def _run_download_job(job: Job) -> None:
         job.event_broker.publish(_status_event(JobStatus.FAILED, str(exc)))
 
 
+def require_auth(authorization: str | None = Header(default=None)) -> None:
+    """FastAPI dependency that enforces the optional bearer-token auth.
+
+    When :data:`API_ACCESS_TOKEN` is unset the dependency is a no-op and the
+    API remains unauthenticated — the behaviour operators have relied on for
+    LAN deployments. When set, every ``/api/*`` request must carry
+    ``Authorization: Bearer <token>`` matching the configured value. The
+    comparison is constant-time to avoid leaking length information.
+    """
+
+    if not API_ACCESS_TOKEN:
+        return
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    supplied = authorization.removeprefix("Bearer ").strip()
+    if not secrets.compare_digest(supplied, API_ACCESS_TOKEN):
+        raise HTTPException(status_code=401, detail="invalid bearer token")
+
+
+def _authorize_websocket(websocket: WebSocket) -> bool:
+    """Accept a WebSocket only when its ``?token=`` matches the shared token.
+
+    Browsers cannot set ``Authorization`` headers on ``new WebSocket(url)`` so
+    the client passes ``?token=…`` instead. The query-string value is still
+    compared constant-time. When ``API_ACCESS_TOKEN`` is unset the handshake
+    is allowed unconditionally.
+    """
+
+    if not API_ACCESS_TOKEN:
+        return True
+    supplied = websocket.query_params.get("token", "")
+    return bool(supplied) and secrets.compare_digest(supplied, API_ACCESS_TOKEN)
+
+
 @asynccontextmanager
 async def _lifespan(app_instance: FastAPI):
-    """Mount the compiled frontend bundle on startup if it's available."""
+    """Mount the compiled frontend bundle and run the background reaper.
+
+    The reaper evicts terminal jobs older than :data:`JOB_TTL_HOURS` every
+    :data:`JOB_REAPER_INTERVAL_SECONDS` so a long-running container doesn't
+    accumulate job records + event buffers forever. Cancelled cleanly on
+    shutdown.
+    """
 
     dist_path = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
     if dist_path.exists():
         app_instance.mount(
             "/", StaticFiles(directory=dist_path, html=True), name="frontend",
         )
-    yield
+    if not API_ACCESS_TOKEN:
+        logger.warning(
+            "API_ACCESS_TOKEN is unset; the API is unauthenticated. Set the env "
+            "var to require a bearer token on /api/* and a ?token= on /ws/*.",
+        )
+    reaper_task = asyncio.create_task(
+        _job_reaper(
+            job_store,
+            ttl_hours=JOB_TTL_HOURS,
+            interval_seconds=JOB_REAPER_INTERVAL_SECONDS,
+        ),
+        name="job-reaper",
+    )
+    try:
+        yield
+    finally:
+        reaper_task.cancel()
+        try:
+            await reaper_task
+        except asyncio.CancelledError:
+            pass
 
 
-app = FastAPI(title="BunkrDownloader API", version=APP_VERSION, lifespan=_lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+app = FastAPI(
+    title="BunkrDownloader API",
+    version=APP_VERSION,
+    lifespan=_lifespan,
+    # Applies to every HTTP route (not WebSocket — that validates ?token= manually).
+    dependencies=[Depends(require_auth)],
 )
+# CORS: ``allow_origins=["*"] + allow_credentials=True`` is self-contradictory
+# (browsers reject credentials with a wildcard origin) and exposes the API
+# cross-site. Default to a localhost regex; override with ALLOWED_ORIGINS for
+# production deployments.
+_cors_kwargs: dict[str, Any] = {
+    "allow_credentials": bool(API_ACCESS_TOKEN),
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+if ALLOWED_ORIGINS:
+    _cors_kwargs["allow_origins"] = ALLOWED_ORIGINS
+else:
+    _cors_kwargs["allow_origins"] = []
+    _cors_kwargs["allow_origin_regex"] = ALLOWED_ORIGIN_REGEX
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 
 @app.get("/api/settings/defaults")
@@ -660,6 +828,23 @@ async def get_settings_defaults() -> dict[str, dict[str, str]]:
 @app.post("/api/downloads", response_model=DownloadResponse)
 async def start_download(request: DownloadRequest) -> DownloadResponse:
     """Schedule a new download job and return its identifier."""
+
+    # Sandbox custom_path before accepting the job: a malicious or mistyped
+    # absolute path otherwise writes anywhere the container process can
+    # reach. Configurable via the ALLOWED_DOWNLOAD_ROOT env var.
+    #
+    # Validate the EFFECTIVE destination — ``create_download_directory``
+    # appends ``DOWNLOAD_FOLDER`` to whatever ``custom_path`` the caller
+    # sent. Checking only the raw value rejected ``custom_path=<root
+    # parent>`` (which would legitimately resolve to ``<root>/Downloads``
+    # after the join) while accepting values that escape through the
+    # join. Validating ``custom_path / DOWNLOAD_FOLDER`` eliminates both.
+    if request.custom_path:
+        try:
+            effective = Path(request.custom_path) / DOWNLOAD_FOLDER
+            resolve_within_allowed_root(str(effective))
+        except PathOutsideSandboxError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     job = Job(job_id=uuid4().hex, request=request)
     await job_store.add(job)
@@ -728,13 +913,30 @@ async def get_download_events(job_id: str, since: int = Query(0, ge=0)) -> dict[
     ``next_id`` is the cursor the client should pass on its next request.
     ``next_index`` is kept as an alias equal to ``next_id`` so the current
     frontend keeps working while the PR3 client migrates to ``next_id``.
+
+    If ``since`` is below the oldest retained event, the ring buffer has
+    pruned history the client has not yet observed. Return ``410 Gone`` with
+    the current cursor so the client resets its view rather than carrying on
+    with an unknown gap.
     """
 
     job = job_store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    events = job.event_broker.get_events(since=since)
+    broker = job.event_broker
+    oldest = broker.oldest_event_id
+    if since > 0 and oldest is not None and since + 1 < oldest:
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "error": "events pruned",
+                "oldest_event_id": oldest,
+                "next_id": broker.next_event_id - 1,
+            },
+        )
+
+    events = broker.get_events(since=since)
     if events:
         next_id = max(event.get("event_id", since) for event in events)
     else:
@@ -744,12 +946,21 @@ async def get_download_events(job_id: str, since: int = Query(0, ge=0)) -> dict[
 
 @app.get("/api/directories")
 async def list_directories(base_path: str | None = Query(None, alias="basePath")) -> dict[str, Any]:
-    """Return up to fifty sub-directories for the requested path."""
+    """Return up to fifty sub-directories under the allowed download root.
 
-    path = Path(base_path).expanduser() if base_path else Path.cwd()
+    ``basePath`` is sandboxed against :data:`ALLOWED_DOWNLOAD_ROOT`; requests
+    that try to enumerate directories outside that root are rejected with
+    422 rather than silently exposing the container's filesystem.
+    """
+
+    # Default to the sandbox root rather than ``cwd`` so the picker surfaces
+    # legitimate download locations out of the box.
+    candidate = base_path or ALLOWED_DOWNLOAD_ROOT
     try:
-        resolved = path.resolve()
-    except (OSError, RuntimeError) as exc:  # noqa: PERF203 path errors bubble up cleanly
+        resolved = resolve_within_allowed_root(candidate)
+    except PathOutsideSandboxError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if not resolved.exists() or not resolved.is_dir():
@@ -780,17 +991,27 @@ async def job_updates(websocket: WebSocket, job_id: str) -> None:
     would silently skip one envelope on every reconnect.
     """
 
+    # Accept first so we can emit a structured close frame. Pre-accept
+    # ``close()`` is allowed by the ASGI spec but starlette's TestClient
+    # stalls on it; accept-then-close keeps wire semantics (a brief accept
+    # followed by 44xx close) while working cleanly under test.
+    await websocket.accept()
+
+    if not _authorize_websocket(websocket):
+        # 4401 (close code) mirrors the HTTP 401 semantics for clients.
+        await websocket.close(code=4401)
+        return
+
     job = job_store.get(job_id)
     if job is None:
         await websocket.close(code=4404)
         return
 
-    await websocket.accept()
     # Send the LAST broadcast event_id, not the next one. /events treats
     # ``since`` as "envelopes with event_id > since", so a client that
-    # echoes this value on its next HTTP backfill picks up cleanly from
-    # the first unseen event. Using ``next_event_id`` here would silently
-    # skip one envelope on every reconnect.
+    # echoes this value on its next HTTP backfill picks up cleanly from the
+    # first unseen event. Using ``next_event_id`` here would silently skip
+    # one envelope on every reconnect.
     hello_cursor = job.event_broker.last_event_id
     hello_envelope = {
         "type": "hello",

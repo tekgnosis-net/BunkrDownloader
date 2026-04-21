@@ -14,11 +14,38 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import (
+    ALLOWED_DOWNLOAD_ROOT,
     DOWNLOAD_FOLDER,
     MAX_FILENAME_LEN,
     SESSION_LOG,
     VALID_CHARACTERS_REGEX,
 )
+
+
+class PathOutsideSandboxError(ValueError):
+    """Raised when a caller-supplied path escapes ``ALLOWED_DOWNLOAD_ROOT``."""
+
+
+def resolve_within_allowed_root(
+    candidate: str,
+    *,
+    root: str | None = None,
+) -> Path:
+    """Resolve ``candidate`` and assert it is under :data:`ALLOWED_DOWNLOAD_ROOT`.
+
+    Used by the FastAPI layer to sandbox attacker-controllable inputs like
+    ``custom_path`` and ``/api/directories?basePath``. Tilde is expanded,
+    then the path is resolved (following symlinks) and checked against the
+    allowed root. Raises :class:`PathOutsideSandboxError` on any escape.
+    """
+
+    allowed_root = Path(root if root is not None else ALLOWED_DOWNLOAD_ROOT).expanduser().resolve()
+    resolved = Path(candidate).expanduser().resolve()
+    if resolved != allowed_root and not resolved.is_relative_to(allowed_root):
+        raise PathOutsideSandboxError(
+            f"{resolved} is outside allowed root {allowed_root}",
+        )
+    return resolved
 
 
 def read_file(filename: str) -> list[str]:
@@ -127,15 +154,59 @@ def remove_invalid_characters(text: str) -> str:
     return re.sub(VALID_CHARACTERS_REGEX, "", text)
 
 
+_LEADING_ALNUM_RUN = re.compile(r"^[A-Za-z0-9]+")
+_MAX_EXTENSION_LEN = 16  # typical real extensions top out well below this
+
+
+def _sanitize_extension(extension: str) -> str:
+    """Normalise a filename extension to a safe whitelist.
+
+    Keeps only the leading run of alphanumerics after the dot, truncated to
+    :data:`_MAX_EXTENSION_LEN`. Stops at the first non-alnum character so
+    scraped-URL residue like ``".jpg?width=1024"`` or Windows-hostile
+    ``".jp:g"`` collapses to ``".jpg"`` rather than concatenating the
+    gibberish tail. Returns an empty string when nothing survives.
+    """
+
+    if not extension:
+        return ""
+    body = extension[1:] if extension.startswith(".") else extension
+    match = _LEADING_ALNUM_RUN.match(body)
+    if not match:
+        return ""
+    safe = match.group(0)[:_MAX_EXTENSION_LEN]
+    return f".{safe}"
+
+
 def truncate_filename(filename: str) -> str:
-    """Truncate the filename to fit within the maximum byte length."""
-    filename_path = Path(filename)
-    name = remove_invalid_characters(filename_path.stem)
-    extension = filename_path.suffix
+    """Return a sanitised, flattened filename for on-disk storage.
 
-    if len(name) > MAX_FILENAME_LEN:
-        available_len = MAX_FILENAME_LEN - len(extension)
-        name = name[:available_len]
+    Strips any directory components from the scraped filename before cleaning
+    so an attacker-controlled value like ``"../evil/pwn.jpg"`` collapses to
+    ``"pwn.jpg"`` rather than surviving a path traversal through the later
+    ``download_path / formatted_filename`` join. The result is always a flat
+    filename — no separators, no parent-directory markers — and is
+    guaranteed to be ``<= MAX_FILENAME_LEN`` bytes so filesystems that
+    impose name-length limits don't error on writes.
+    """
 
-    formatted_filename = f"{name}{extension}"
-    return str(filename_path.with_name(formatted_filename))
+    # Take only the terminal component so ``..`` / ``/`` / ``\\`` segments
+    # are dropped before anything else touches the value.
+    terminal = Path(filename).name
+    stem = Path(terminal).stem
+    extension = Path(terminal).suffix
+
+    safe_stem = remove_invalid_characters(stem)
+    safe_ext = _sanitize_extension(extension)
+
+    # When the sanitised extension alone meets or exceeds the limit, drop
+    # it entirely — keeping a truncated middle of the extension would
+    # produce nonsense like ``.jpegjpegjp`` and still risk overrun.
+    if len(safe_ext) >= MAX_FILENAME_LEN:
+        safe_ext = ""
+
+    budget = MAX_FILENAME_LEN - len(safe_ext)
+    if len(safe_stem) > budget:
+        safe_stem = safe_stem[:budget]
+
+    return f"{safe_stem}{safe_ext}"

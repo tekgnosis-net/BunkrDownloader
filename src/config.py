@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 from collections import deque
 from dataclasses import dataclass, field
 from enum import IntEnum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,6 +25,14 @@ DOWNLOAD_FOLDER = "Downloads"  # The folder where downloaded files will be store
 URLS_FILE = "URLs.txt"         # The file containing the list of URLs to process.
 SESSION_LOG = os.getenv("SESSION_LOG_PATH", "session.log")  # The file used to log errors.
 MIN_DISK_SPACE_GB = 2          # Minimum free disk space (in GB) required.
+# Web API path sandbox — incoming custom_path and /api/directories basePath
+# must resolve within this root. Defaults to the cwd's Downloads folder so
+# the out-of-the-box deployment is safe; set ALLOWED_DOWNLOAD_ROOT=/ to
+# restore the pre-PR2 "anywhere the container can reach" behaviour.
+ALLOWED_DOWNLOAD_ROOT = os.getenv(
+    "ALLOWED_DOWNLOAD_ROOT",
+    str(Path.cwd() / DOWNLOAD_FOLDER),
+)
 
 # ============================
 # API / Status Endpoints
@@ -103,6 +112,25 @@ STATUS_CACHE_TTL_SECONDS = int(os.getenv("STATUS_CACHE_TTL_SECONDS", "60"))
 # Strategy: 'backoff' (retry with delays) or 'skip' (log and skip)
 MAINTENANCE_RETRY_STRATEGY = os.getenv("MAINTENANCE_RETRY_STRATEGY", "backoff")
 
+# Web job memory bounds (PR2)
+JOB_EVENT_RETENTION = int(os.getenv("JOB_EVENT_RETENTION", "2000"))
+JOB_TTL_HOURS = int(os.getenv("JOB_TTL_HOURS", "24"))
+JOB_REAPER_INTERVAL_SECONDS = int(os.getenv("JOB_REAPER_INTERVAL_SECONDS", "900"))
+
+# Web API auth + CORS (PR2)
+# Optional shared bearer token. When unset the API runs unauthenticated,
+# preserving the LAN-friendly default; the app logs a warning at startup.
+API_ACCESS_TOKEN = os.getenv("API_ACCESS_TOKEN", "").strip() or None
+# Comma-separated list of allowed origins for CORS. Empty falls back to the
+# localhost regex so dev workflows continue to work.
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
+ALLOWED_ORIGIN_REGEX = os.getenv(
+    "ALLOWED_ORIGIN_REGEX",
+    r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+)
+
 # Mapping of URL identifiers to a boolean for album (True) vs single file (False).
 URL_TYPE_MAPPING = {"a": True, "f": False, "i": False, "v": False}
 
@@ -163,11 +191,19 @@ DOWNLOAD_HEADERS: dict[str, str] = {
 # ============================
 @dataclass
 class DownloadInfo:
-    """Represent the information related to a download task."""
+    """Represent the information related to a download task.
+
+    ``item_page`` (PR2) is the page URL the ``download_link`` was originally
+    resolved from. Bunkr serves signed, short-lived CDN URLs; by the time a
+    retry runs after tail-end albums finish the link has often expired.
+    Keeping the source page around lets :class:`AlbumDownloader` re-resolve
+    a fresh link on retry instead of replaying a stale one.
+    """
 
     download_link: str
     filename: str
     task: int
+    item_page: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
