@@ -1,5 +1,100 @@
 # CHANGELOG
 
+## v0.10.0 (2026-04-21)
+
+### Feature
+
+* feat(web): memory hygiene, path sandbox, auth, stale URL re-resolution (PR2) (#4)
+
+* feat(web): memory hygiene, path sandbox, auth, stale URL re-resolution
+
+PR2 of the three-phase refactor. Builds on PR1&#39;s NetworkContext + event_id
+foundation.
+
+Memory bounds:
+* JobEventBroker._events is now a collections.deque(maxlen=JOB_EVENT_RETENTION,
+  default 2000). get_events(since) stays correct when older events are pruned;
+  /api/downloads/{id}/events returns 410 Gone with the current cursor when
+  the client&#39;s `since` is below the retained floor so the UI can reset
+  rather than silently miss history.
+* Background reaper inside the FastAPI lifespan evicts terminal jobs older
+  than JOB_TTL_HOURS (default 24) every JOB_REAPER_INTERVAL_SECONDS (900).
+  Cancelled cleanly on shutdown; failures in a tick are logged not fatal.
+
+Path sandbox:
+* ALLOWED_DOWNLOAD_ROOT env var (default cwd/Downloads) now bounds both
+  custom_path (validated in POST /api/downloads) and basePath (validated
+  in GET /api/directories). Both reject escapes with 422.
+* truncate_filename strips directory components first so scraped filenames
+  like &#39;../../etc/pwn.jpg&#39; collapse to &#39;pwn.jpg&#39; before Path-joining onto
+  download_path. Extensions are scrubbed for traversal markers.
+
+API auth + CORS:
+* Optional API_ACCESS_TOKEN env: when set every /api/* requires
+  `Authorization: Bearer &lt;token&gt;` and every /ws/* requires `?token=&lt;token&gt;`.
+  When unset the API runs unauthenticated (startup warning logged).
+  Comparison is constant-time via secrets.compare_digest.
+* Replace CORS `allow_origins=[&#34;*&#34;] + allow_credentials=True` with an
+  env-configured list (ALLOWED_ORIGINS) or regex (ALLOWED_ORIGIN_REGEX,
+  default matches localhost:any). Credentials only enabled when an auth
+  token is configured.
+
+Stale download URLs:
+* AlbumDownloader._retry_failed_download now re-fetches item_page and
+  re-resolves a fresh signed CDN URL before retrying. Bunkr URLs are
+  short-lived; replaying a stale one after a long album was a common
+  cause of tail-end download failures. Falls back to the captured link
+  if re-resolution fails.
+
+DownloadOutcome propagation:
+* attempt_download now returns DownloadOutcome directly; the inverted
+  bool boundary in MediaDownloader.download is retired.
+
+Tests:
+* test_memory_bounds.py: deque retention, 410 Gone, reaper eviction,
+  reaper cancellation.
+* test_file_utils.py: truncate_filename hardening + resolve_within_allowed_root.
+* test_web_security.py: path sandbox 422, bearer-token HTTP auth, CORS
+  preflight defaults, WebSocket token helper unit-tested directly.
+* pytest-timeout added as a CI safety net (timeout=30s in pyproject).
+
+* fix: cap filename length, sanitize extension, validate effective custom_path
+
+Addresses the three Copilot review findings on PR #4.
+
+truncate_filename length:
+* Previously, when the extension was longer than MAX_FILENAME_LEN the
+  budget subtraction went negative and the returned name still exceeded
+  the limit. Now the extension is truncated (via _sanitize_extension&#39;s
+  internal cap) or dropped entirely before the stem budget is computed,
+  so the result is guaranteed to be &lt;= MAX_FILENAME_LEN.
+
+Extension sanitisation:
+* Scraped URL residue like &#34;photo.jpg?width=1024&#34; previously survived
+  because the extension was not passed through any character whitelist.
+  New _sanitize_extension() keeps only the leading alphanumeric run
+  after the dot (stopping at the first invalid char) and caps at 16
+  chars. &#34;photo.jpg?x=1&#34; -&gt; &#34;photo.jpg&#34;; &#34;pic.jp:g|bar&#34; -&gt; &#34;pic.jpg&#34;
+  (colon terminates the run); &#34;pic.JPEG2000&#34; -&gt; &#34;pic.JPEG2000&#34;.
+
+Effective custom_path validation:
+* The /api/downloads sandbox used to check `custom_path` directly, but
+  `create_download_directory` appends `DOWNLOAD_FOLDER`. With the
+  default root = cwd/Downloads, a legitimate `custom_path=&lt;cwd&gt;` value
+  (effective path cwd/Downloads after the join) was rejected, while
+  paths picked from /api/directories (already inside the root) would
+  write to `.../Downloads/Downloads`. Now validates
+  `Path(custom_path) / DOWNLOAD_FOLDER` against the root so the check
+  matches the actual on-disk destination.
+
+Tests:
+* Five new TestTruncateFilename cases: query-string residue, OS-hostile
+  chars in extension, length cap under pathological extension, alnum
+  survival, leading-run semantics.
+* New test_custom_path_parent_of_root_accepted_when_effective_is_inside
+  exercising the CLI-style custom_path=&lt;root parent&gt; flow that was
+  incorrectly 422&#39;d before. ([`e47b3c0`](https://github.com/tekgnosis-net/BunkrDownloader/commit/e47b3c0d1ccdb2d182882c9d4807fe493d13889d))
+
 ## v0.9.1 (2026-04-21)
 
 ### Documentation
