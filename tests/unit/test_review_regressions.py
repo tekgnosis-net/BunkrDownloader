@@ -4,6 +4,10 @@ Each test targets a specific comment so a future refactor that backslides
 on the contract surfaces a loud failure with a named test.
 """
 
+# Fake HTTP response doubles are intentionally thin and bs4 is imported
+# lazily to keep the test collection fast when the crawler path isn't
+# exercised — both patterns are fine in tests.
+# pylint: disable=missing-function-docstring,too-few-public-methods,unused-argument,import-outside-toplevel
 from __future__ import annotations
 
 import asyncio
