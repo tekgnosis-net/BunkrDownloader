@@ -769,11 +769,15 @@ async def list_directories(base_path: str | None = Query(None, alias="basePath")
 async def job_updates(websocket: WebSocket, job_id: str) -> None:
     """Stream job updates to the caller via WebSocket.
 
-    Sends a ``hello`` envelope first containing the broker's ``next_event_id``
-    so the client knows the authoritative cursor position — if its local
-    cursor is behind, the client can issue a single HTTP backfill against
-    ``/api/downloads/{job_id}/events?since=<cursor>`` and resume the live
-    stream with zero duplicate events.
+    The first frame is always a ``hello`` envelope carrying
+    ``broker.last_event_id`` as ``next_id`` — i.e. the ``event_id`` of the
+    most recently broadcast envelope, identical to what
+    ``GET /api/downloads/{job_id}/events`` returns as ``next_id``. A
+    reconnecting client that echoes this value as ``?since=<cursor>`` on a
+    single HTTP backfill picks up cleanly from the first unseen event
+    because ``/events`` returns envelopes with ``event_id > since``. Sending
+    ``next_event_id`` here instead (the id that *will* be assigned next)
+    would silently skip one envelope on every reconnect.
     """
 
     job = job_store.get(job_id)

@@ -71,6 +71,19 @@ class AlbumDownloader:
                 failed_download = await asyncio.to_thread(media_downloader.download)
                 if failed_download:
                     self.failed_downloads.append(failed_download)
+            else:
+                # API failure left us without a CDN URL. Mark the task
+                # finished+hidden so the overall progress counter can advance
+                # and the UI doesn't show a phantom in-flight row — otherwise
+                # the whole album's overall bar would never reach completion.
+                self.live_manager.update_log(
+                    event="Download link unresolved",
+                    details=(
+                        f"Could not resolve a download URL for "
+                        f"{item_filename or item_page}"
+                    ),
+                )
+                self.live_manager.update_task(task, completed=100, visible=False)
 
     async def download_album(self, max_workers: int = MAX_WORKERS) -> None:
         """Handle the album download."""

@@ -142,3 +142,88 @@ def test_head_content_length_falls_back_to_module_defaults() -> None:
     assert length == 42
     # Default path uses the module-level DOWNLOAD_HEADERS dict.
     assert captured["headers"] is download_utils.DOWNLOAD_HEADERS
+
+
+@pytest.mark.asyncio
+async def test_album_unresolved_link_finishes_task_without_download() -> None:
+    """When the Bunkr API returns None for an item, the album must not wedge.
+
+    Regression for the Copilot comment on album_downloader.py: a None
+    download link used to leave the created task row visible+unfinished
+    forever, blocking the overall counter from ever reaching completion.
+    """
+
+    from argparse import Namespace
+    from bs4 import BeautifulSoup
+
+    from src.config import AlbumInfo, NetworkContext, SessionInfo
+    from src.downloaders.album_downloader import AlbumDownloader
+
+    class _StubManager:
+        def __init__(self) -> None:
+            self.overall: dict = {}
+            self.task_updates: list = []
+            self.logs: list = []
+            self._next = 0
+
+        def add_overall_task(self, description, num_tasks):
+            self.overall = {"description": description, "total": num_tasks, "completed": 0}
+
+        def add_task(self, current_task=0, total=100):
+            tid = self._next
+            self._next += 1
+            return tid
+
+        def update_task(self, task_id, completed=None, advance=0, *, visible=True):
+            self.task_updates.append(
+                (task_id, {"completed": completed, "visible": visible}),
+            )
+
+        def update_log(self, *, event, details):
+            self.logs.append((event, details))
+
+        def update_maintenance(self, **_):
+            pass
+
+    mgr = _StubManager()
+    network = NetworkContext(
+        status_page="https://status.example/",
+        bunkr_api="https://api.example/api/vs",
+        fallback_domain="example.cr",
+        user_agent="ua/1",
+        download_referer="https://ref.example/",
+    )
+    session_info = SessionInfo(
+        args=Namespace(skip_status_check=True),
+        bunkr_status={},
+        download_path="/tmp",
+        network=network,
+    )
+    downloader = AlbumDownloader(
+        session_info=session_info,
+        album_info=AlbumInfo(album_id="stub", item_pages=["https://bunkr.test/v/a"]),
+        live_manager=mgr,
+    )
+
+    soup = BeautifulSoup(
+        '<h1 class="text-subs font-semibold text-base sm:text-lg truncate">foo.bin</h1>',
+        "html.parser",
+    )
+
+    with (
+        patch(
+            "src.downloaders.album_downloader.fetch_page",
+            return_value=soup,
+        ),
+        patch(
+            "src.downloaders.album_downloader.get_download_info",
+            return_value=(None, "foo.bin"),
+        ),
+    ):
+        await downloader.download_album(max_workers=1)
+
+    # The task must be resolved (marked hidden/completed) rather than left
+    # hanging — otherwise the overall counter would never reach total.
+    hidden = [u for _, u in mgr.task_updates if u["visible"] is False]
+    assert hidden, "task must be hidden when link resolution fails"
+    assert any("Download link unresolved" in evt for evt, _ in mgr.logs)
