@@ -64,6 +64,7 @@ class AlbumDownloader:
                         download_link=item_download_link,
                         filename=item_filename,
                         task=task,
+                        item_page=item_page,
                     ),
                     live_manager=self.live_manager,
                 )
@@ -111,11 +112,47 @@ class AlbumDownloader:
         task: int,
         filename: str,
         download_link: str,
+        item_page: str | None = None,
     ) -> None:
-        """Handle failed downloads and retries them."""
+        """Handle failed downloads by re-resolving the signed CDN URL on retry.
+
+        Bunkr's per-item URLs are time-limited — by the time the retry phase
+        runs at the tail of a large album, the originally resolved
+        ``download_link`` is often expired. When ``item_page`` is available,
+        we re-fetch the page and ask the API for a fresh decryption key
+        before attempting the download. If the re-resolution fails we fall
+        back to the captured link so behaviour degrades gracefully.
+        """
+        resolved_link = download_link
+        resolved_filename = filename
+        if item_page:
+            try:
+                item_soup = await fetch_page(
+                    item_page, network=self.session_info.network,
+                )
+                if item_soup is not None:
+                    fresh_link, fresh_filename = await get_download_info(
+                        item_page, item_soup, network=self.session_info.network,
+                    )
+                    if fresh_link:
+                        resolved_link = fresh_link
+                    if fresh_filename:
+                        resolved_filename = fresh_filename
+            except (RuntimeError, OSError):
+                # Re-resolution is best-effort; log and keep the original link.
+                self.live_manager.update_log(
+                    event="Retry resolution failed",
+                    details=f"Using cached link for {filename}",
+                )
+
         media_downloader = MediaDownloader(
             session_info=self.session_info,
-            download_info=DownloadInfo(download_link, filename, task),
+            download_info=DownloadInfo(
+                download_link=resolved_link,
+                filename=resolved_filename,
+                task=task,
+                item_page=item_page,
+            ),
             live_manager=self.live_manager,
             retries=1,  # Retry once for failed downloads
         )
@@ -194,6 +231,7 @@ class AlbumDownloader:
                     data["id"],
                     data["filename"],
                     data["download_link"],
+                    data.get("item_page"),
                 )
 
         self.failed_downloads.clear()

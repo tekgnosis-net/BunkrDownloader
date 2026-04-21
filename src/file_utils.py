@@ -14,11 +14,38 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import (
+    ALLOWED_DOWNLOAD_ROOT,
     DOWNLOAD_FOLDER,
     MAX_FILENAME_LEN,
     SESSION_LOG,
     VALID_CHARACTERS_REGEX,
 )
+
+
+class PathOutsideSandboxError(ValueError):
+    """Raised when a caller-supplied path escapes ``ALLOWED_DOWNLOAD_ROOT``."""
+
+
+def resolve_within_allowed_root(
+    candidate: str,
+    *,
+    root: str | None = None,
+) -> Path:
+    """Resolve ``candidate`` and assert it is under :data:`ALLOWED_DOWNLOAD_ROOT`.
+
+    Used by the FastAPI layer to sandbox attacker-controllable inputs like
+    ``custom_path`` and ``/api/directories?basePath``. Tilde is expanded,
+    then the path is resolved (following symlinks) and checked against the
+    allowed root. Raises :class:`PathOutsideSandboxError` on any escape.
+    """
+
+    allowed_root = Path(root if root is not None else ALLOWED_DOWNLOAD_ROOT).expanduser().resolve()
+    resolved = Path(candidate).expanduser().resolve()
+    if resolved != allowed_root and not resolved.is_relative_to(allowed_root):
+        raise PathOutsideSandboxError(
+            f"{resolved} is outside allowed root {allowed_root}",
+        )
+    return resolved
 
 
 def read_file(filename: str) -> list[str]:
@@ -128,14 +155,29 @@ def remove_invalid_characters(text: str) -> str:
 
 
 def truncate_filename(filename: str) -> str:
-    """Truncate the filename to fit within the maximum byte length."""
-    filename_path = Path(filename)
-    name = remove_invalid_characters(filename_path.stem)
-    extension = filename_path.suffix
+    """Return a sanitised, flattened filename for on-disk storage.
 
-    if len(name) > MAX_FILENAME_LEN:
-        available_len = MAX_FILENAME_LEN - len(extension)
-        name = name[:available_len]
+    Strips any directory components from the scraped filename before cleaning
+    so an attacker-controlled value like ``"../evil/pwn.jpg"`` collapses to
+    ``"pwn.jpg"`` rather than surviving a path traversal through the later
+    ``download_path / formatted_filename`` join. The result is always a flat
+    filename — no separators, no parent-directory markers.
+    """
 
-    formatted_filename = f"{name}{extension}"
-    return str(filename_path.with_name(formatted_filename))
+    # Take only the terminal component so ``..`` / ``/`` / ``\\`` segments
+    # are dropped before anything else touches the value.
+    terminal = Path(filename).name
+    stem = Path(terminal).stem
+    extension = Path(terminal).suffix
+
+    safe_stem = remove_invalid_characters(stem)
+    if len(safe_stem) > MAX_FILENAME_LEN - len(extension):
+        safe_stem = safe_stem[: MAX_FILENAME_LEN - len(extension)]
+
+    # Defensive: ``remove_invalid_characters`` already strips everything but
+    # ``[A-Za-z0-9 _-]`` so the extension is the only remaining risk surface.
+    # Reject any extension that still contains traversal markers.
+    if ".." in extension or "/" in extension or "\\" in extension:
+        extension = ""
+
+    return f"{safe_stem}{extension}"

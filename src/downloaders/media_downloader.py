@@ -55,13 +55,12 @@ class MediaDownloader:
         self.live_manager = live_manager
         self.retries = retries
 
-    def attempt_download(self, final_path: str) -> bool:
+    def attempt_download(self, final_path: str) -> DownloadOutcome:
         """Attempt to download the file with retries.
 
-        Returns the legacy ``True = failed / False = succeeded`` bool so the
-        retry bookkeeping in :meth:`download` stays byte-identical. The enum
-        returned by :func:`save_file_with_progress` is adapted at this boundary
-        until PR2 propagates :class:`DownloadOutcome` all the way up.
+        Returns a :class:`DownloadOutcome`. The inverted bool convention was
+        retired in PR2 — callers branch explicitly on
+        ``outcome is DownloadOutcome.SUCCESS``.
         """
         download_headers = (
             self.session_info.network.download_headers
@@ -84,7 +83,7 @@ class MediaDownloader:
                     break
 
             else:
-                outcome = save_file_with_progress(
+                return save_file_with_progress(
                     response,
                     final_path,
                     self.download_info.task,
@@ -96,10 +95,9 @@ class MediaDownloader:
                     # response can land in the content-length backfill.
                     download_headers=download_headers,
                 )
-                return outcome is not DownloadOutcome.SUCCESS
 
-        # Download failed
-        return True
+        # All retries exhausted — caller decides whether to queue a retry pass.
+        return DownloadOutcome.RETRYABLE_FAILURE
 
     def download(self) -> dict | None:
         """Handle the download process."""
@@ -127,10 +125,10 @@ class MediaDownloader:
             return None
 
         # Attempt to download the file with retries
-        failed_download = self.attempt_download(final_path)
+        outcome = self.attempt_download(final_path)
 
         # Handle failed download after retries
-        if failed_download:
+        if outcome is not DownloadOutcome.SUCCESS:
             return self._handle_failed_download(is_final_attempt=is_final_attempt)
 
         return None
@@ -381,6 +379,11 @@ class MediaDownloader:
                 "id": self.download_info.task,
                 "filename": self.download_info.filename,
                 "download_link": self.download_info.download_link,
+                # item_page is carried forward so _retry_failed_download can
+                # re-resolve a fresh signed CDN URL instead of replaying a
+                # stale one. Defaults to None when MediaDownloader was used
+                # standalone (single-file download path).
+                "item_page": self.download_info.item_page,
             }
 
         self.live_manager.update_log(
