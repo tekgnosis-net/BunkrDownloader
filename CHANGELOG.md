@@ -1,5 +1,129 @@
 # CHANGELOG
 
+## v0.9.1 (2026-04-21)
+
+### Documentation
+
+* docs: add 🆕 badges to highlight new maintenance detection features in README
+
+- Mark new highlight for maintenance detection
+- Mark 3 new environment variables (STATUS_CHECK_ON_FAILURE, STATUS_CACHE_TTL_SECONDS, MAINTENANCE_RETRY_STRATEGY)
+- Mark 3 new CLI flags (--skip-status-check, --status-cache-ttl, --maintenance-strategy)
+- Mark maintenance logging format in Configuration
+- Mark maintenance detection and toast notifications in Architecture ([`a95cb57`](https://github.com/tekgnosis-net/BunkrDownloader/commit/a95cb5796db0a34e115a647f9669e325ab44f843))
+
+### Fix
+
+* fix: per-job network context, event ids, progress stalls (PR1) (#3)
+
+* fix: per-job network context, event ids, progress stalls
+
+* Introduce a frozen NetworkContext attached to SessionInfo so concurrent
+  web jobs no longer clobber module-global Bunkr settings (status page,
+  API, fallback domain, user agent, download referer).
+* Stamp monotonic event_id + ISO ts on every JobEventBroker envelope.
+* Fix the subscribe-replay race, the concurrent add_task task-id race
+  (threading.Lock + deferred registration), and the no-op update_task
+  republish storm (dirty-check before publish).
+* Emit structured maintenance_detected envelopes with subdomain /
+  status / affected_files_count fields instead of regex-parsing
+  formatted log strings.
+* WebSocket sends a hello frame carrying next_id so clients can
+  backfill precisely after reconnects.
+* Rename /events next_index to next_id with a legacy alias so the
+  current frontend keeps working until the client-side migration.
+* DownloadOutcome enum replaces the inverted bool return; OSError and
+  ChunkedEncodingError now hide stalled tasks and drain late HEAD
+  results so unknown-length downloads always reach completed=100.
+* Replace the deprecated @app.on_event startup with an
+  asynccontextmanager lifespan; drop the assert job.manager production
+  assert for an explicit RuntimeError.
+* Add LiveManager log_debug and update_maintenance parity methods so
+  the CLI and web managers share the same surface.
+* Add a pytest suite (36 tests) covering race regressions, envelope
+  shape, parallel-job isolation, and the download_utils progress
+  paths. Wire CI to run compileall -&gt; pylint -&gt; pytest on 3.10 and 3.11.
+
+* fix(web): align WS hello cursor, thread headers into HEAD probe, guard None API
+
+Addresses the three Copilot review findings on PR1 plus the pylint test-file
+warnings that broke CI on 3.10 and 3.11.
+
+Cursor semantics:
+* The WebSocket hello frame used to emit `next_id = broker.next_event_id`
+  (the id that will be assigned to the next publish) while `/events?since=N`
+  returns envelopes with `event_id &gt; N`. A client echoing hello.next_id
+  would permanently skip the first unseen event. Hello now sends
+  `broker.last_event_id` — the cursor matches what the HTTP endpoint
+  returns so reconnects backfill cleanly.
+
+Head probe headers:
+* `_head_content_length` now accepts an explicit `headers` kwarg and
+  `save_file_with_progress` + `MediaDownloader.attempt_download` forward
+  the per-job NetworkContext download_headers. Previously the probe
+  always used the module-global `DOWNLOAD_HEADERS`, so per-job overrides
+  (user-agent / referer) were silently ignored for unknown-length files
+  — the probe could get a different CDN response than the streaming GET.
+
+None API response guard:
+* `get_item_download_link` now returns `str | None` and short-circuits on
+  `get_api_response is None` instead of passing None into `decrypt_url`
+  (which indexed into it and raised a confusing TypeError deep in the
+  crawler). Propagates through `format_item_filename` (tolerates None
+  second arg) and `downloader.py`&#39;s single-file path (skips with a log
+  when the link is unresolved instead of calling requests.get(None)).
+
+Tests:
+* New `test_review_regressions.py` with a named guard per review finding.
+* Existing `smoke_tests/test_progress.py::_delayed_head` updated to
+  accept the new `headers=` kwarg.
+
+CI pylint:
+* `tests/conftest.py` adds missing-docstring / unused-arg / redefined-outer
+  disables for the intentionally thin fixture doubles.
+* `tests/integration/test_web_job_flow.py`, `tests/unit/test_download_utils.py`,
+  `tests/unit/test_media_downloader.py` — line-length, yield-from,
+  too-many-arguments fixes that failed CI on both Python versions.
+
+* fix(tests): silence strict pylint 3.11 warnings in review-regression file
+
+* fix: close orphan task on missing CDN link; drop src.web re-export
+
+Addresses the second-round Copilot feedback plus the Python 3.10 CI
+failure in the integration tests.
+
+Album-path orphan task:
+* When get_download_info returns (None, filename) — API failure, not a
+  &#34;no download&#34; — AlbumDownloader.execute_item_download used to leave
+  the task row visible and unfinished, preventing the overall counter
+  from ever reaching completion. Now logs &#34;Download link unresolved&#34;
+  and marks the task completed=100 + visible=False so the overall bar
+  advances correctly.
+
+WebSocket hello docstring:
+* The docstring claimed the frame carries broker.next_event_id, but the
+  implementation deliberately sends last_event_id (as next_id) to match
+  /events cursor semantics. Docstring updated to describe the actual
+  contract so a client implementer doesn&#39;t skip one event per reconnect.
+
+Drop src/web/__init__.py re-export:
+* `from .app import app` in the package __init__ shadows the submodule
+  on attribute lookup — unittest.mock.patch(&#34;src.web.app.validate_and_
+  download&#34;, …) resolves to the FastAPI instance on Python 3.10 and
+  fails with AttributeError. Nothing actually needs `from src.web import
+  app` (uvicorn uses `src.web.app:app`). Remove the re-export and add a
+  docstring explaining why.
+
+Regression test:
+* test_album_unresolved_link_finishes_task_without_download covers the
+  missing-link path end-to-end with a stub manager, asserting both the
+  log event and the hide-task update fire so the overall counter
+  can complete. ([`5b417f9`](https://github.com/tekgnosis-net/BunkrDownloader/commit/5b417f9c56be673251b871f6b279379d628ee8d4))
+
+### Unknown
+
+* Delete .github/copilot-instructions.md ([`bbfd2df`](https://github.com/tekgnosis-net/BunkrDownloader/commit/bbfd2dfa938890e5cb728e6bf023bba2ae39cb5d))
+
 ## v0.9.0 (2026-02-11)
 
 ### Feature
