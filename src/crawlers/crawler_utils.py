@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.config import NetworkContext
 from src.general_utils import fetch_page
 from src.url_utils import get_url_based_filename
 
@@ -51,7 +52,11 @@ def extract_item_pages(soup: BeautifulSoup, host_page: str) -> list[str] | None:
 
 
 async def extract_all_album_item_pages(
-    initial_soup: BeautifulSoup, host_page: str, url: str,
+    initial_soup: BeautifulSoup,
+    host_page: str,
+    url: str,
+    *,
+    network: NetworkContext | None = None,
 ) -> list[str]:
     """Collect item page links from an album, including pagination."""
     # Extract item pages from the initial soup
@@ -65,7 +70,7 @@ async def extract_all_album_item_pages(
 
     if next_album_pages is not None:
         for next_page in next_album_pages:
-            next_page_soup = await fetch_page(next_page)
+            next_page_soup = await fetch_page(next_page, network=network)
             if next_page_soup is None:
                 raise RuntimeError(f"Failed to load paginated album page: {next_page}")
 
@@ -83,9 +88,11 @@ async def extract_all_album_item_pages(
 async def get_item_download_link(
     item_url: str,
     soup: BeautifulSoup | None = None,
+    *,
+    network: NetworkContext | None = None,
 ) -> str:
     """Retrieve the download link for a specific item from its HTML content."""
-    api_response = get_api_response(item_url, soup=soup)
+    api_response = get_api_response(item_url, soup=soup, network=network)
     return decrypt_url(api_response)
 
 
@@ -121,9 +128,16 @@ def format_item_filename(original_filename: str, url_based_filename: str) -> str
     return f"{original_base}-{url_base}{extension}"
 
 
-async def get_download_info(item_url: str, item_soup: BeautifulSoup) -> tuple:
+async def get_download_info(
+    item_url: str,
+    item_soup: BeautifulSoup,
+    *,
+    network: NetworkContext | None = None,
+) -> tuple:
     """Gather download information (link and filename) for the item."""
-    item_download_link = await get_item_download_link(item_url, soup=item_soup)
+    item_download_link = await get_item_download_link(
+        item_url, soup=item_soup, network=network,
+    )
     item_filename = get_item_filename(item_soup)
 
     url_based_filename = (

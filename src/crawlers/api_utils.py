@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import requests
 
-from src.config import BUNKR_API, HEADERS, HTTPStatus
+from src.config import BUNKR_API, HEADERS, HTTPStatus, NetworkContext
 from src.url_utils import get_identifier
 
 if TYPE_CHECKING:
@@ -26,14 +26,18 @@ if TYPE_CHECKING:
 def get_api_response(
     item_url: str,
     soup: BeautifulSoup | None = None,
+    *,
+    network: NetworkContext | None = None,
 ) -> dict[str, bool | str | int] | None:
     """Fetch encryption data for a given slug from the Bunkr API."""
     slug = get_identifier(item_url, soup=soup)
+    api_url = network.bunkr_api if network else BUNKR_API
+    headers = network.headers if network else HEADERS
 
     try:
         with requests.Session() as session:
-            session.headers.update(HEADERS)
-            response = session.post(BUNKR_API, json={"slug": slug})
+            session.headers.update(headers)
+            response = session.post(api_url, json={"slug": slug})
 
         if response.status_code != HTTPStatus.OK:
             log_message = f"Failed to fetch encryption data for slug '{slug}'"

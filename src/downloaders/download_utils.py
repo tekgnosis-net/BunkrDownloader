@@ -6,6 +6,7 @@ import logging
 import math
 import shutil
 from concurrent.futures import Future, ThreadPoolExecutor
+from enum import IntEnum
 from pathlib import Path
 from typing import Callable
 
@@ -17,6 +18,22 @@ from src.config import DOWNLOAD_HEADERS, LARGE_FILE_CHUNK_SIZE, THRESHOLDS
 from src.managers.progress_manager import ProgressManager
 
 DEFAULT_UNKNOWN_SIZE_BASELINE = 50 * 1024 * 1024
+
+
+class DownloadOutcome(IntEnum):
+    """Result of a single :func:`save_file_with_progress` invocation.
+
+    Replaces the historical ``True = failed / False = succeeded`` bool return
+    that was trivially easy to misread. ``RETRYABLE_FAILURE`` covers transient
+    network errors and late-stage IO problems (chunk decode, final rename);
+    ``TERMINAL_FAILURE`` is reserved for errors the caller should not retry.
+    The value is adapted back to a ``bool`` at :meth:`MediaDownloader.attempt_download`
+    for now so upstream retry wiring is unchanged in PR1.
+    """
+
+    SUCCESS = 0
+    RETRYABLE_FAILURE = 1
+    TERMINAL_FAILURE = 2
 
 
 def get_chunk_size(file_size: int) -> int:
@@ -149,22 +166,40 @@ def _finalise_download(
     final_path: str,
     progress_manager: ProgressManager,
     task: int,
-) -> bool:
-    """Rename the in-flight file if possible and report completion."""
+) -> DownloadOutcome:
+    """Rename the in-flight file if possible and report completion.
+
+    On any terminal-path failure (short read or rename error), mark the task
+    ``visible=False`` before returning so the progress row does not sit
+    frozen at its last-known percentage — a user-visible symptom of the old
+    99% stall.
+    """
 
     if file_size:
         if total_downloaded != file_size:
-            return True
-        shutil.move(temp_path, final_path)
+            _log_once(
+                progress_manager,
+                f"Short read for {final_path}: {total_downloaded}/{file_size} bytes; will retry.",
+            )
+            progress_manager.update_task(task, completed=0, visible=False)
+            return DownloadOutcome.RETRYABLE_FAILURE
+        try:
+            shutil.move(temp_path, final_path)
+        except OSError as os_err:
+            _log_once(progress_manager, f"Could not finalise {final_path}: {os_err}")
+            progress_manager.update_task(task, completed=0, visible=False)
+            return DownloadOutcome.RETRYABLE_FAILURE
         progress_manager.update_task(task, completed=100)
-        return False
+        return DownloadOutcome.SUCCESS
 
     try:
         shutil.move(temp_path, final_path)
-    except OSError:
-        return True
+    except OSError as os_err:
+        _log_once(progress_manager, f"Could not finalise {final_path}: {os_err}")
+        progress_manager.update_task(task, completed=0, visible=False)
+        return DownloadOutcome.RETRYABLE_FAILURE
     progress_manager.update_task(task, completed=100)
-    return False
+    return DownloadOutcome.SUCCESS
 # pylint: enable=too-many-arguments
 
 
@@ -175,7 +210,7 @@ def save_file_with_progress(
     progress_manager: ProgressManager,
     *,
     download_url: str | None = None,
-) -> bool:  # pylint: disable=too-many-locals
+) -> DownloadOutcome:  # pylint: disable=too-many-locals
     """Save the file from the response to the specified path.
 
     Adds a `.temp` extension for in-flight downloads and attempts to infer the
@@ -229,13 +264,31 @@ def save_file_with_progress(
                                 ),
                             )
 
-    # Handle partial downloads caused by network interruptions
+    # Handle partial downloads caused by network interruptions. The task would
+    # otherwise sit frozen at its last estimate — hide it and log so retry
+    # bookkeeping can reactivate it on the next attempt.
     except ChunkedEncodingError:
-        return True
+        _log_once(
+            progress_manager,
+            f"Partial transfer for {download_path}; the stream ended mid-chunk.",
+        )
+        progress_manager.update_task(task, completed=0, visible=False)
+        return DownloadOutcome.RETRYABLE_FAILURE
 
     finally:
         if head_executor:
             head_executor.shutdown(wait=False, cancel_futures=True)
+
+    # Late HEAD result: if the content-length probe resolved after the loop
+    # exited, promote the estimator into a real percentage one last time so
+    # _finalise_download can compare bytes correctly.
+    if head_future is not None and file_size is None:
+        try:
+            head_length = head_future.result(timeout=0.1)
+        except Exception:  # pylint: disable=broad-exception-caught
+            head_length = None
+        if head_length:
+            file_size = head_length
 
     return _finalise_download(
         file_size=file_size,

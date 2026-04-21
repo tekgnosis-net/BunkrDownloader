@@ -33,7 +33,7 @@ from src.file_utils import (
     write_on_session_log,
 )
 
-from .download_utils import save_file_with_progress
+from .download_utils import DownloadOutcome, save_file_with_progress
 
 if TYPE_CHECKING:
     from src.managers.live_manager import LiveManager
@@ -56,13 +56,24 @@ class MediaDownloader:
         self.retries = retries
 
     def attempt_download(self, final_path: str) -> bool:
-        """Attempt to download the file with retries."""
+        """Attempt to download the file with retries.
+
+        Returns the legacy ``True = failed / False = succeeded`` bool so the
+        retry bookkeeping in :meth:`download` stays byte-identical. The enum
+        returned by :func:`save_file_with_progress` is adapted at this boundary
+        until PR2 propagates :class:`DownloadOutcome` all the way up.
+        """
+        download_headers = (
+            self.session_info.network.download_headers
+            if self.session_info.network is not None
+            else DOWNLOAD_HEADERS
+        )
         for attempt in range(self.retries):
             try:
                 response = requests.get(
                     self.download_info.download_link,
                     stream=True,
-                    headers=DOWNLOAD_HEADERS,
+                    headers=download_headers,
                     timeout=30,
                 )
                 response.raise_for_status()
@@ -73,15 +84,14 @@ class MediaDownloader:
                     break
 
             else:
-                # Returns True if the download failed (marked as partial), otherwise
-                # False to indicate a successful download and exit the loop.
-                return save_file_with_progress(
+                outcome = save_file_with_progress(
                     response,
                     final_path,
                     self.download_info.task,
                     self.live_manager,
                     download_url=self.download_info.download_link,
                 )
+                return outcome is not DownloadOutcome.SUCCESS
 
         # Download failed
         return True
@@ -223,6 +233,7 @@ class MediaDownloader:
                     subdomain,
                     self.session_info.bunkr_status,
                     cache_ttl_seconds=cache_ttl,
+                    network=self.session_info.network,
                 )
 
                 status_check_msg = "(refreshed)" if was_updated else "(cached)"
@@ -234,13 +245,17 @@ class MediaDownloader:
                         subdomain, current_status, self.download_info.download_link
                     )
 
-                    self.live_manager.update_log(
+                    maintenance_details = (
+                        f"{subdomain} is under maintenance {status_check_msg}: "
+                        f"{current_status}. File {self.download_info.filename} "
+                        f"will be retried."
+                    )
+                    self.live_manager.update_maintenance(
+                        subdomain=subdomain,
+                        status=current_status,
+                        affected_files_count=1,
                         event="Maintenance detected",
-                        details=(
-                            f"{subdomain} is under maintenance {status_check_msg}: "
-                            f"{current_status}. File {self.download_info.filename} "
-                            f"will be retried."
-                        ),
+                        details=maintenance_details,
                     )
 
                     # Get maintenance strategy
@@ -312,6 +327,7 @@ class MediaDownloader:
                     subdomain,
                     self.session_info.bunkr_status,
                     cache_ttl_seconds=cache_ttl,
+                    network=self.session_info.network,
                 )
 
                 if "Maintenance" in current_status or "maintenance" in current_status.lower():
@@ -320,7 +336,10 @@ class MediaDownloader:
                         subdomain, current_status, self.download_info.download_link
                     )
 
-                    self.live_manager.update_log(
+                    self.live_manager.update_maintenance(
+                        subdomain=subdomain,
+                        status=current_status,
+                        affected_files_count=1,
                         event="Maintenance detected (502)",
                         details=(
                             f"{subdomain} maintenance during bad gateway for "

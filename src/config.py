@@ -169,6 +169,38 @@ class DownloadInfo:
     filename: str
     task: int
 
+
+@dataclass(frozen=True, slots=True)
+class NetworkContext:
+    """Per-job networking configuration.
+
+    Frozen so concurrent jobs holding different contexts cannot cross-contaminate.
+    Consumers read ``headers`` / ``download_headers`` directly; module-level
+    ``HEADERS`` / ``DOWNLOAD_HEADERS`` remain as the process-wide defaults used
+    by CLI callers before a context is built.
+    """
+
+    status_page: str
+    bunkr_api: str
+    fallback_domain: str
+    user_agent: str
+    download_referer: str
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """Return the HTTP headers used for generic Bunkr page fetches."""
+        return {"User-Agent": self.user_agent}
+
+    @property
+    def download_headers(self) -> dict[str, str]:
+        """Return the HTTP headers used for CDN download requests."""
+        return {
+            "User-Agent": self.user_agent,
+            "Connection": "keep-alive",
+            "Referer": self.download_referer,
+        }
+
+
 @dataclass
 class SessionInfo:
     """Hold the session-related information."""
@@ -176,6 +208,7 @@ class SessionInfo:
     args: Namespace | None
     bunkr_status: dict[str, str]
     download_path: str
+    network: NetworkContext
 
 
 def update_network_settings(
@@ -235,6 +268,45 @@ def apply_argument_overrides(args: Namespace | None) -> None:
         download_referer=getattr(args, "download_referer", None),
         user_agent=getattr(args, "user_agent", None),
         fallback_domain=getattr(args, "fallback_domain", None),
+    )
+
+
+def build_network_context(
+    args: Namespace | None = None,
+    *,
+    overrides: dict[str, str | None] | None = None,
+) -> NetworkContext:
+    """Construct an immutable :class:`NetworkContext` for a single job.
+
+    Resolution order: explicit ``overrides`` > CLI ``args`` attribute > module
+    defaults populated from env/``.env`` at import time. The module defaults
+    can still be mutated once at startup by :func:`apply_argument_overrides`
+    (CLI path); beyond that, this function is the only way a caller should
+    obtain networking settings. Two jobs with different overrides produce two
+    distinct frozen contexts that cannot interfere with each other.
+    """
+
+    overrides = overrides or {}
+
+    def pick(key: str, default: str) -> str:
+        override = overrides.get(key)
+        if override:
+            return str(override)
+        if args is not None:
+            value = getattr(args, key, None)
+            if value:
+                return str(value)
+        return default
+
+    return NetworkContext(
+        status_page=pick("status_page", STATUS_PAGE),
+        bunkr_api=pick("bunkr_api", BUNKR_API),
+        fallback_domain=pick("fallback_domain", FALLBACK_DOMAIN),
+        user_agent=pick("user_agent", HEADERS.get("User-Agent", DEFAULT_USER_AGENT)),
+        download_referer=pick(
+            "download_referer",
+            DOWNLOAD_HEADERS.get("Referer", DEFAULT_DOWNLOAD_REFERER),
+        ),
     )
 
 @dataclass

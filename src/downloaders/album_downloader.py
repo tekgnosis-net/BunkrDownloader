@@ -41,9 +41,10 @@ class AlbumDownloader:
         """Handle the download of an individual item in the album."""
         async with semaphore:
             task = self.live_manager.add_task(current_task=current_task)
+            network = self.session_info.network
 
             # Process the download of an item
-            item_soup = await fetch_page(item_page)
+            item_soup = await fetch_page(item_page, network=network)
             if item_soup is None:
                 self.live_manager.update_log(
                     event="Fetch failed",
@@ -52,7 +53,7 @@ class AlbumDownloader:
                 raise RuntimeError(f"Failed to load album item page: {item_page}")
 
             item_download_link, item_filename = await get_download_info(
-                item_page, item_soup,
+                item_page, item_soup, network=network,
             )
 
             # Download item
@@ -140,6 +141,7 @@ class AlbumDownloader:
                     subdomain,
                     self.session_info.bunkr_status,
                     cache_ttl_seconds=cache_ttl,
+                    network=self.session_info.network,
                 )
 
                 # Check if subdomain is still under maintenance
@@ -150,7 +152,10 @@ class AlbumDownloader:
 
                     if maintenance_strategy == "skip":
                         # Skip all files from this subdomain
-                        self.live_manager.update_log(
+                        self.live_manager.update_maintenance(
+                            subdomain=subdomain,
+                            status=current_status,
+                            affected_files_count=len(downloads_group),
                             event="Maintenance skip (retry phase)",
                             details=(
                                 f"Skipping {len(downloads_group)} file(s) from {subdomain} "
@@ -159,7 +164,10 @@ class AlbumDownloader:
                         )
                         continue  # Skip to next subdomain
 
-                    self.live_manager.update_log(
+                    self.live_manager.update_maintenance(
+                        subdomain=subdomain,
+                        status=current_status,
+                        affected_files_count=len(downloads_group),
                         event="Maintenance retry",
                         details=(
                             f"Retrying {len(downloads_group)} file(s) from {subdomain} "

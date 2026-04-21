@@ -9,16 +9,19 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from .config import HEADERS, STATUS_PAGE
+from .config import HEADERS, NetworkContext, STATUS_CACHE_TTL_SECONDS, STATUS_PAGE
 
-# Module-level cache for status page results: {cache_key: (fetch_time, status_dict)}
+# Module-level cache for status page results, keyed on the status_page URL so
+# jobs with differing network overrides maintain isolated caches.
+# Shape: {status_page_url: (fetch_time, status_dict)}.
 _status_cache: dict[str, tuple[datetime, dict[str, str]]] = {}
 
 
-def fetch_page(url: str) -> BeautifulSoup | None:
+def fetch_page(url: str, *, network: NetworkContext | None = None) -> BeautifulSoup | None:
     """Fetch the HTML content of a page at the given URL."""
+    headers = network.headers if network else HEADERS
     try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
 
     except requests.RequestException:
@@ -28,9 +31,10 @@ def fetch_page(url: str) -> BeautifulSoup | None:
     return BeautifulSoup(response.text, "html.parser")
 
 
-def get_bunkr_status() -> dict[str, str]:
+def get_bunkr_status(network: NetworkContext | None = None) -> dict[str, str]:
     """Fetch the status of servers from the status page and return a dictionary."""
-    soup = fetch_page(STATUS_PAGE)
+    status_page = network.status_page if network else STATUS_PAGE
+    soup = fetch_page(status_page, network=network)
     if soup is None:
         logging.warning("Unable to fetch Bunkr status page; continuing without host data")
         return {}
@@ -95,6 +99,8 @@ def refresh_server_status(
     subdomain: str,
     bunkr_status: dict[str, str],
     cache_ttl_seconds: int = 60,
+    *,
+    network: NetworkContext | None = None,
 ) -> tuple[str, bool]:
     """Refresh the status of a specific subdomain from the status page.
 
@@ -102,13 +108,16 @@ def refresh_server_status(
         subdomain: The subdomain name to check (e.g., "Cdn13").
         bunkr_status: The current status dictionary to update in-place.
         cache_ttl_seconds: Time-to-live for cached status in seconds.
+        network: Per-job networking context. The cache is keyed on
+            ``network.status_page`` so concurrent jobs with distinct overrides
+            don't cross-contaminate each other's view of the status page.
 
     Returns:
         A tuple of (current_status, was_updated) where:
         - current_status: The latest status string for the subdomain.
         - was_updated: True if the status was refreshed from the server.
     """
-    cache_key = "bunkr_status"
+    cache_key = network.status_page if network else STATUS_PAGE
     now = datetime.now()
 
     # Check cache first
@@ -122,7 +131,7 @@ def refresh_server_status(
             return current_status, False
 
     # Cache expired or not present, fetch fresh status
-    fresh_status = get_bunkr_status()
+    fresh_status = get_bunkr_status(network)
     if fresh_status:
         _status_cache[cache_key] = (now, fresh_status)
         # Update the provided dictionary with all fresh data
@@ -132,3 +141,31 @@ def refresh_server_status(
 
     # Fallback: couldn't fetch fresh status
     return bunkr_status.get(subdomain, "Unknown"), False
+
+
+def get_bunkr_status_cached(
+    network: NetworkContext | None = None,
+    *,
+    ttl: int = STATUS_CACHE_TTL_SECONDS,
+) -> dict[str, str]:
+    """Return the host status mapping, reusing :data:`_status_cache` when fresh.
+
+    Preferred over :func:`get_bunkr_status` for web callers that may launch
+    multiple jobs in quick succession — the first fetch warms the cache for the
+    rest. TTL defaults to :data:`STATUS_CACHE_TTL_SECONDS` so the behaviour
+    matches :func:`refresh_server_status`.
+    """
+
+    cache_key = network.status_page if network else STATUS_PAGE
+    now = datetime.now()
+
+    entry = _status_cache.get(cache_key)
+    if entry is not None:
+        fetch_time, cached_status = entry
+        if now - fetch_time < timedelta(seconds=ttl):
+            return dict(cached_status)
+
+    fresh_status = get_bunkr_status(network)
+    if fresh_status:
+        _status_cache[cache_key] = (now, fresh_status)
+    return fresh_status
