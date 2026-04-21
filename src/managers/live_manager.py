@@ -25,19 +25,21 @@ class LiveManager:
     terminal.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         progress_manager: ProgressManager,
         logger_table: LoggerTable,
         *,
         disable_ui: bool = False,
         refresh_per_second: int = 10,
+        log_level: str = "info",
     ) -> None:
         """Initialize the progress manager and logger, and set up the live view."""
         self.progress_manager = progress_manager
         self.progress_table = self.progress_manager.create_progress_table()
         self.logger_table = logger_table
         self.disable_ui = disable_ui
+        self._log_level = log_level.lower()
         self.live = (
             Live(self._render_live_view(), refresh_per_second=refresh_per_second)
             if not self.disable_ui
@@ -73,6 +75,29 @@ class LiveManager:
         self.logger_table.log(event, details, disable_ui=self.disable_ui)
         if not self.disable_ui:
             self.live.update(self._render_live_view())
+
+    def log_debug(self, *, event: str, details: str) -> None:
+        """Emit a log entry only when the configured verbosity enables debug."""
+        if self._log_level == "debug":
+            self.update_log(event=event, details=details)
+
+    def update_maintenance(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        subdomain: str,
+        status: str,
+        affected_files_count: int,
+        event: str,
+        details: str,
+    ) -> None:
+        """Report a maintenance event through the regular log pane.
+
+        The web layer emits a structured ``maintenance_detected`` envelope for
+        the frontend toast; the Rich terminal UI has no equivalent so this
+        collapses the structured fields into a human log line.
+        """
+        _ = (subdomain, status, affected_files_count)  # pinned in ``details`` already
+        self.update_log(event=event, details=details)
 
     def start(self) -> None:
         """Start the live display."""
@@ -115,8 +140,17 @@ class LiveManager:
         return f"{hours:02} hrs {minutes:02} mins {seconds:02} secs"
 
 
-def initialize_managers(*, disable_ui: bool = False) -> LiveManager:
+def initialize_managers(
+    *,
+    disable_ui: bool = False,
+    log_level: str = "info",
+) -> LiveManager:
     """Initialize and return the managers for progress tracking and logging."""
     progress_manager = ProgressManager(task_name="Album", item_description="File")
     logger_table = LoggerTable()
-    return LiveManager(progress_manager, logger_table, disable_ui=disable_ui)
+    return LiveManager(
+        progress_manager,
+        logger_table,
+        disable_ui=disable_ui,
+        log_level=log_level,
+    )

@@ -15,14 +15,15 @@ from typing import TYPE_CHECKING
 from requests.exceptions import ConnectionError as RequestConnectionError
 from requests.exceptions import RequestException, Timeout
 
-from src.bunkr_utils import get_bunkr_status
+from src.bunkr_utils import get_bunkr_status_cached
 from src.config import (
     AlbumInfo,
     DownloadInfo,
     SessionInfo,
     MAX_WORKERS,
-    parse_arguments,
     apply_argument_overrides,
+    build_network_context,
+    parse_arguments,
 )
 from src.crawlers.crawler_utils import (
     extract_all_album_item_pages,
@@ -77,7 +78,9 @@ async def handle_download_process(
 
     # Album download
     if check_url_type(url):
-        item_pages = await extract_all_album_item_pages(initial_soup, host_page, url)
+        item_pages = await extract_all_album_item_pages(
+            initial_soup, host_page, url, network=session_info.network,
+        )
         album_downloader = AlbumDownloader(
             session_info=session_info,
             album_info=AlbumInfo(album_id=identifier, item_pages=item_pages),
@@ -87,7 +90,18 @@ async def handle_download_process(
 
     # Single item download
     else:
-        download_link, filename = await get_download_info(url, initial_soup)
+        download_link, filename = await get_download_info(
+            url, initial_soup, network=session_info.network,
+        )
+        if not download_link:
+            # Bunkr API failed (network error, non-200 response) — mirror the
+            # album-path behaviour of skipping rather than passing None into
+            # requests.get and blowing up with a cryptic TypeError.
+            live_manager.update_log(
+                event="Download link unresolved",
+                details=f"Could not resolve a download URL for {filename or url}",
+            )
+            return
         live_manager.add_overall_task(identifier, num_tasks=1)
         task = live_manager.add_task()
 
@@ -122,7 +136,8 @@ async def validate_and_download(
             details="Disk space check skipped by configuration",
         )
 
-    soup = await fetch_page(url)
+    network = build_network_context(args)
+    soup = await fetch_page(url, network=network)
     if soup is None:
         live_manager.update_log(
             event="Fetch failed",
@@ -141,6 +156,7 @@ async def validate_and_download(
         args=args,
         bunkr_status=bunkr_status,
         download_path=download_path,
+        network=network,
     )
 
     if log_level.lower() == "debug":
@@ -178,8 +194,11 @@ async def main() -> None:
 
     args = parse_arguments()
     apply_argument_overrides(args)
-    bunkr_status = get_bunkr_status() or {}
-    live_manager = initialize_managers(disable_ui=args.disable_ui)
+    bunkr_status = get_bunkr_status_cached(build_network_context(args)) or {}
+    live_manager = initialize_managers(
+        disable_ui=args.disable_ui,
+        log_level=getattr(args, "log_level", "info"),
+    )
 
     try:
         with live_manager.live:

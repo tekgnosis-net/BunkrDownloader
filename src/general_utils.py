@@ -28,6 +28,7 @@ from .config import (
     HEADERS,
     MIN_DISK_SPACE_GB,
     HTTPStatus,
+    NetworkContext,
 )
 from .file_utils import write_on_session_log
 from .url_utils import change_domain_to_cr
@@ -36,10 +37,15 @@ if TYPE_CHECKING:
     from src.managers.live_manager import LiveManager
 
 
-def validate_download_link(download_link: str) -> bool:
+def validate_download_link(
+    download_link: str,
+    *,
+    network: NetworkContext | None = None,
+) -> bool:
     """Check if a download link is accessible."""
+    headers = network.download_headers if network else DOWNLOAD_HEADERS
     try:
-        response = requests.head(download_link, headers=DOWNLOAD_HEADERS, timeout=5)
+        response = requests.head(download_link, headers=headers, timeout=5)
 
     except requests.RequestException:
         return False
@@ -47,9 +53,16 @@ def validate_download_link(download_link: str) -> bool:
     return response.status_code != HTTPStatus.SERVER_DOWN
 
 
-async def fetch_page(url: str, retries: int = 5) -> BeautifulSoup | None:
+async def fetch_page(
+    url: str,
+    retries: int = 5,
+    *,
+    network: NetworkContext | None = None,
+) -> BeautifulSoup | None:
     """Fetch the HTML content of a page at the given URL, with retry logic."""
     tried_cr = False
+    headers = network.headers if network else HEADERS
+    fallback_domain = network.fallback_domain if network else None
 
     def handle_response(response: Response) -> BeautifulSoup | None:
         """Process the HTTP response and handles specific status codes."""
@@ -64,11 +77,11 @@ async def fetch_page(url: str, retries: int = 5) -> BeautifulSoup | None:
     for attempt in range(retries):
         try:
             with requests.Session() as session:
-                session.headers.update(HEADERS)
+                session.headers.update(headers)
                 response = session.get(url, timeout=40)
             if response.status_code == HTTPStatus.FORBIDDEN and not tried_cr:
                 tried_cr = True
-                url = change_domain_to_cr(url)
+                url = change_domain_to_cr(url, fallback_domain=fallback_domain)
                 continue  # Retry immediately with .cr
 
             response.raise_for_status()

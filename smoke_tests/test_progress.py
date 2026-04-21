@@ -118,9 +118,14 @@ class ProgressSmokeTests(unittest.TestCase):
         chunks = [b"c" * 5] * 6  # 30 bytes total
         manager = FakeManager()
 
-        def _delayed_head(_: str, *, timeout: float = 5.0) -> int | None:
+        def _delayed_head(
+            _: str,
+            *,
+            timeout: float = 5.0,
+            headers: dict[str, str] | None = None,
+        ) -> int | None:
             """Simulate a slow HEAD request returning a length."""
-            del timeout
+            del timeout, headers
             time.sleep(0.05)
             return 30
 

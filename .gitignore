@@ -130,6 +130,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Remove claude artifacts if present
+CLAUDE.md
+
 # Spyder project settings
 .spyderproject
 .spyproject

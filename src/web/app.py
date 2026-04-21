@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
+import threading
 from argparse import Namespace
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
@@ -22,8 +22,8 @@ from pydantic import BaseModel, Field, AnyHttpUrl
 
 from downloader import validate_and_download
 from src import __version__ as __app_version__
-from src.bunkr_utils import get_bunkr_status
-from src.config import MAX_WORKERS, get_network_settings, update_network_settings
+from src.bunkr_utils import get_bunkr_status_cached
+from src.config import MAX_WORKERS, build_network_context, get_network_settings
 
 _env_version = os.getenv("APP_VERSION", "")
 if _env_version and _env_version.lower() != "latest":
@@ -120,53 +120,121 @@ class JobStatus(str, Enum):
 
 
 class JobEventBroker:
-    """Fan-out publisher that buffers job events for any active subscribers."""
+    """Fan-out publisher that buffers job events for any active subscribers.
+
+    Each published envelope is stamped with a monotonically increasing
+    ``event_id`` (per job, starting at 1) and an ISO-8601 ``ts``. The same
+    envelope object is delivered through the WebSocket stream and the
+    ``/events`` polling fallback, so the client can dedup on ``event_id``
+    alone. The broker is loop-bound on first use rather than at construction
+    so dataclass ``default_factory`` can safely build one outside an async
+    context (e.g. in unit tests).
+    """
 
     def __init__(self) -> None:
-        self._loop = asyncio.get_running_loop()
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._events: list[dict[str, Any]] = []
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._id_lock = threading.Lock()
+        self._event_seq = 0
+
+    def bind(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Attach the broker to the event loop that owns its subscribers.
+
+        Safe to call repeatedly with the same loop. Idempotent to preserve
+        the ``Job.__post_init__`` → ``_run_download_job`` two-phase bind.
+        """
+
+        if self._loop is not None and self._loop is not loop:
+            raise RuntimeError("JobEventBroker is already bound to a different loop")
+        self._loop = loop
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop:
         """Return the asyncio event loop backing the broker."""
 
+        if self._loop is None:
+            raise RuntimeError(
+                "JobEventBroker used before bind(loop) — construct Job inside "
+                "an async context or call bind() explicitly",
+            )
         return self._loop
 
     def _broadcast(self, event: dict[str, Any]) -> None:
-        """Send an event to all subscribers and retain it for future replays."""
+        """Stamp the envelope, retain it for replays, and fan out live."""
 
+        with self._id_lock:
+            self._event_seq += 1
+            event["event_id"] = self._event_seq
+        event.setdefault("ts", datetime.now(timezone.utc).isoformat())
         self._events.append(event)
         for queue in list(self._subscribers):
             queue.put_nowait(event)
 
+    @property
+    def next_event_id(self) -> int:
+        """Return the ``event_id`` that will be assigned to the next publish."""
+
+        return self._event_seq + 1
+
+    @property
+    def last_event_id(self) -> int:
+        """Return the highest ``event_id`` published so far (0 if none).
+
+        This is the value a client passes as ``since`` on its next backfill
+        request — ``/events`` returns envelopes with ``event_id > since``, so
+        ``since = last_event_id`` yields only envelopes published afterwards.
+        Kept aligned with the ``next_id`` field that ``/events`` emits, so the
+        WebSocket ``hello`` frame and the HTTP polling endpoint agree on what
+        the cursor means.
+        """
+
+        return self._event_seq
+
     def publish(self, event: dict[str, Any]) -> None:
-        """Publish an event, marshaling to the main loop if needed."""
+        """Publish an event, marshaling to the bound loop when called off-thread."""
+
+        # Access the bound loop through the property so unbound brokers raise
+        # an explicit RuntimeError instead of silently matching the ``None``
+        # from a sync context and discarding events into _broadcast without a
+        # subscriber fan-out loop.
+        bound_loop = self.loop
         try:
             running_loop = asyncio.get_running_loop()
         except RuntimeError:
             running_loop = None
 
-        if running_loop is self._loop:
+        if running_loop is bound_loop:
             self._broadcast(event)
         else:
-            self._loop.call_soon_threadsafe(self._broadcast, event)
+            bound_loop.call_soon_threadsafe(self._broadcast, event)
 
-    def get_events(self, start_index: int = 0) -> list[dict[str, Any]]:
-        """Return a slice of the buffered events starting from the requested index."""
-        if start_index <= 0:
+    def get_events(self, since: int = 0) -> list[dict[str, Any]]:
+        """Return envelopes with ``event_id > since``.
+
+        Positional semantics (by list index) were brittle once the broker is
+        allowed to discard older events; ``event_id`` is authoritative.
+        """
+
+        if since <= 0:
             return list(self._events)
-        return self._events[start_index:]
+        return [event for event in self._events if event.get("event_id", 0) > since]
 
     async def subscribe(self) -> AsyncIterator[dict[str, Any]]:
-        """Yield past and live events to a subscriber."""
+        """Yield past and live events to a subscriber.
+
+        Snapshot-then-register is atomic on the broker loop because
+        :meth:`_broadcast` never awaits — no event can land between taking the
+        snapshot and adding the queue to ``_subscribers``, so no event is
+        dropped, and none is delivered twice.
+        """
+
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-        for event in self._events:
-            await queue.put(event)
-
+        snapshot = list(self._events)
         self._subscribers.add(queue)
         try:
+            for event in snapshot:
+                yield event
             while True:
                 yield await queue.get()
         finally:
@@ -177,11 +245,18 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
     """Adapter that mirrors the CLI LiveManager API for the web frontend."""
 
     def __init__(self, broker: JobEventBroker, log_level: str = "info") -> None:
-        """Initialise the manager with an event broker used for notifications."""
+        """Initialise the manager with an event broker used for notifications.
+
+        The broker's loop is looked up lazily via :meth:`_loop`. This allows
+        the manager to be constructed before the broker has been bound — the
+        two-phase pattern used by :class:`Job` when it is instantiated inside
+        a request handler (bound early) vs a unit test (bound by
+        :func:`_run_download_job` at start time).
+        """
 
         self._broker = broker
-        self._loop = broker.loop
         self.live = nullcontext()
+        self._task_id_lock = threading.Lock()
         self._next_task_id = 0
         self._overall = {"description": None, "total": 0, "completed": 0}
         self._tasks: dict[int, dict[str, Any]] = {}
@@ -213,11 +288,20 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
         self._run_in_loop(_impl)
 
     def add_task(self, current_task: int = 0, total: int = 100) -> int:
-        """Create and register a new task, returning its identifier."""
+        """Reserve a task id and publish its creation on the broker loop.
+
+        ``add_task`` is called from worker threads spawned by
+        :func:`asyncio.to_thread`, so the id counter is guarded by a
+        :class:`threading.Lock`. The task's presence in ``self._tasks`` is
+        only realised once the :meth:`_run_in_loop` closure runs; a bounded
+        retry in :meth:`update_task` tolerates the small window where an
+        update lands before the registration closure has fired.
+        """
 
         label_total = self._overall["total"] or total
-        task_id = self._next_task_id
-        self._next_task_id += 1
+        with self._task_id_lock:
+            task_id = self._next_task_id
+            self._next_task_id += 1
         task = {
             "id": task_id,
             "label": f"File {current_task + 1}/{label_total}",
@@ -225,8 +309,14 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
             "visible": True,
             "finished": False,
         }
-        self._tasks[task_id] = task
-        self._broker.publish({"type": "task_created", "task": self._task_payload(task)})
+
+        def _impl() -> None:
+            self._tasks[task_id] = task
+            self._broker.publish(
+                {"type": "task_created", "task": self._task_payload(task)},
+            )
+
+        self._run_in_loop(_impl)
         return task_id
 
     def update_task(
@@ -237,12 +327,26 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
         *,
         visible: bool = True,
     ) -> None:
-        """Update an existing task's completion percentage and visibility."""
+        """Update an existing task's completion percentage and visibility.
+
+        The update is silently no-ops when nothing changed, preventing
+        ``task_updated`` from spamming the wire with identical state. If the
+        corresponding :meth:`add_task` closure hasn't landed on the broker
+        loop yet, the update is rescheduled once via ``call_soon``.
+        """
+
+        retry_flag = {"retried": False}
 
         def _impl() -> None:
             task = self._tasks.get(task_id)
             if task is None:
+                if retry_flag["retried"]:
+                    return
+                retry_flag["retried"] = True
+                self._broker.loop.call_soon(_impl)
                 return
+
+            before = (task["completed"], task["visible"], task["finished"])
 
             if completed is not None:
                 task["completed"] = float(completed)
@@ -265,25 +369,20 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
                         "completed": self._overall["completed"],
                     })
 
-            self._broker.publish({"type": "task_updated", "task": self._task_payload(task)})
+            after = (task["completed"], task["visible"], task["finished"])
+            if before == after:
+                return
+
+            self._broker.publish(
+                {"type": "task_updated", "task": self._task_payload(task)},
+            )
 
         self._run_in_loop(_impl)
 
     def update_log(self, *, event: str, details: str) -> None:
         """Append a log entry to the job timeline and broadcast it."""
 
-        timestamp = datetime.now(timezone.utc).isoformat()
-        payload = {
-            "type": "log",
-            "event": event,
-            "details": details,
-            "timestamp": timestamp,
-        }
-
-        # Check if this is a maintenance-related event and emit special event
-        if "maintenance" in event.lower():
-            self._emit_maintenance_event(event, details)
-
+        payload = {"type": "log", "event": event, "details": details}
         self._run_in_loop(self._broker.publish, payload)
 
     def log_debug(self, *, event: str, details: str) -> None:
@@ -291,6 +390,34 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
 
         if self._log_level == "debug":
             self.update_log(event=event, details=details)
+
+    def update_maintenance(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        subdomain: str,
+        status: str,
+        affected_files_count: int,
+        event: str,
+        details: str,
+    ) -> None:
+        """Emit both a structured ``maintenance_detected`` envelope and a log.
+
+        The upstream callers already know the subdomain, maintenance status
+        and affected file count — passing them explicitly replaces the old
+        regex that tried to recover these values from the formatted log
+        string itself.
+        """
+
+        maintenance_payload = {
+            "type": "maintenance_detected",
+            "subdomain": subdomain,
+            "status": status,
+            "affected_files_count": affected_files_count,
+            "event": event,
+            "details": details,
+        }
+        self._run_in_loop(self._broker.publish, maintenance_payload)
+        self.update_log(event=event, details=details)
 
     def start(self) -> None:  # noqa: D401 kept for API parity
         """Start hook kept for compatibility."""
@@ -307,7 +434,6 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
                     "The script has finished execution. "
                     f"Execution time: {_format_duration(duration)}"
                 ),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
         self._run_in_loop(_impl)
@@ -323,51 +449,18 @@ class WebLiveManager:  # pylint: disable=too-many-instance-attributes
         }
 
     def _run_in_loop(self, callback: Callable[..., None], *args: Any) -> None:
-        """Execute a callback in the manager loop, deferring if on another thread."""
+        """Execute a callback in the broker loop, deferring if on another thread."""
 
+        loop = self._broker.loop
         try:
             running_loop = asyncio.get_running_loop()
         except RuntimeError:
             running_loop = None
 
-        if running_loop is self._loop:
+        if running_loop is loop:
             callback(*args)
         else:
-            self._loop.call_soon_threadsafe(callback, *args)
-
-    def _emit_maintenance_event(self, event: str, details: str) -> None:
-        """Emit a special maintenance-detected event for the frontend."""
-
-        # Extract subdomain from details if present
-        subdomain = "Unknown"
-        affected_files_count = 1
-        status = "Maintenance"
-
-        # Parse details for structured information
-        if "subdomain" in details.lower() or "cdn" in details.lower():
-            words = details.split()
-            for word in words:
-                if word.startswith("Cdn") or word.startswith("cdn"):
-                    subdomain = word.strip(".,:")
-                    break
-
-        if "file(s)" in details:
-            # Extract count like "5 file(s)"
-            match = re.search(r"(\d+)\s+file\(s\)", details)
-            if match:
-                affected_files_count = int(match.group(1))
-
-        maintenance_payload = {
-            "type": "maintenance_detected",
-            "subdomain": subdomain,
-            "status": status,
-            "affected_files_count": affected_files_count,
-            "event": event,
-            "details": details,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-        self._run_in_loop(self._broker.publish, maintenance_payload)
+            loop.call_soon_threadsafe(callback, *args)
 
 
 @dataclass(slots=True)
@@ -384,6 +477,15 @@ class Job:  # pylint: disable=too-many-instance-attributes
     error: str | None = None
 
     def __post_init__(self) -> None:
+        # Binding the broker before the manager is constructed is load-bearing:
+        # the manager's __init__ emits the startup log lines, which fan out
+        # through the broker's loop. Jobs instantiated outside an async context
+        # (e.g. in tests) can still construct the broker — they must bind it
+        # themselves before creating the manager.
+        try:
+            self.event_broker.bind(asyncio.get_running_loop())
+        except RuntimeError:
+            pass
         if self.manager is None:
             self.manager = WebLiveManager(self.event_broker, log_level=self.request.log_level)
 
@@ -464,22 +566,25 @@ def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
 async def _run_download_job(job: Job) -> None:
     """Execute the download flow while emitting updates through the live manager."""
 
-    assert job.manager is not None
+    if job.manager is None:
+        raise RuntimeError(f"Job {job.job_id} has no live manager attached")
     manager = job.manager
+
+    # Ensure the broker is bound to this loop even if Job() was constructed
+    # outside an async context before the task was scheduled.
+    job.event_broker.bind(asyncio.get_running_loop())
 
     job.status = JobStatus.RUNNING
     job.event_broker.publish(_status_event(JobStatus.RUNNING))
 
     try:
-        if job.request.network:
-            update_network_settings(
-                status_page=job.request.network.status_page,
-                api_endpoint=job.request.network.api_endpoint,
-                download_referer=job.request.network.download_referer,
-                user_agent=job.request.network.user_agent,
-                fallback_domain=job.request.network.fallback_domain,
-            )
-        bunkr_status = await asyncio.to_thread(get_bunkr_status)
+        # Build a per-job NetworkContext — no module-level mutation, so two
+        # concurrent jobs with different overrides cannot interfere. The
+        # equivalent namespace is also threaded through ``args`` below so
+        # ``validate_and_download`` can reproduce the same context inside.
+        job_args_preview = _build_namespace(str(job.request.urls[0]), job.request)
+        job_network = build_network_context(job_args_preview)
+        bunkr_status = await asyncio.to_thread(get_bunkr_status_cached, job_network)
         if not isinstance(bunkr_status, dict):
             logger.warning(
                 "Bunkr status lookup returned %s; defaulting to empty mapping",
@@ -523,7 +628,19 @@ async def _run_download_job(job: Job) -> None:
         job.event_broker.publish(_status_event(JobStatus.FAILED, str(exc)))
 
 
-app = FastAPI(title="BunkrDownloader API", version=APP_VERSION)
+@asynccontextmanager
+async def _lifespan(app_instance: FastAPI):
+    """Mount the compiled frontend bundle on startup if it's available."""
+
+    dist_path = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    if dist_path.exists():
+        app_instance.mount(
+            "/", StaticFiles(directory=dist_path, html=True), name="frontend",
+        )
+    yield
+
+
+app = FastAPI(title="BunkrDownloader API", version=APP_VERSION, lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -531,15 +648,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def ensure_frontend() -> None:
-    """Mount the compiled frontend bundle if available."""
-
-    dist_path = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-    if dist_path.exists():
-        app.mount("/", StaticFiles(directory=dist_path, html=True), name="frontend")
 
 
 @app.get("/api/settings/defaults")
@@ -615,15 +723,23 @@ async def cancel_download(job_id: str) -> dict[str, Any]:
 
 @app.get("/api/downloads/{job_id}/events")
 async def get_download_events(job_id: str, since: int = Query(0, ge=0)) -> dict[str, Any]:
-    """Fetch buffered events for a job starting at the requested index."""
+    """Fetch buffered events for a job with ``event_id > since``.
+
+    ``next_id`` is the cursor the client should pass on its next request.
+    ``next_index`` is kept as an alias equal to ``next_id`` so the current
+    frontend keeps working while the PR3 client migrates to ``next_id``.
+    """
 
     job = job_store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    events = job.event_broker.get_events(start_index=since)
-    next_index = since + len(events)
-    return {"events": events, "next_index": next_index}
+    events = job.event_broker.get_events(since=since)
+    if events:
+        next_id = max(event.get("event_id", since) for event in events)
+    else:
+        next_id = since
+    return {"events": events, "next_id": next_id, "next_index": next_id}
 
 
 @app.get("/api/directories")
@@ -651,7 +767,18 @@ async def list_directories(base_path: str | None = Query(None, alias="basePath")
 
 @app.websocket("/ws/jobs/{job_id}")
 async def job_updates(websocket: WebSocket, job_id: str) -> None:
-    """Stream job updates to the caller via WebSocket."""
+    """Stream job updates to the caller via WebSocket.
+
+    The first frame is always a ``hello`` envelope carrying
+    ``broker.last_event_id`` as ``next_id`` — i.e. the ``event_id`` of the
+    most recently broadcast envelope, identical to what
+    ``GET /api/downloads/{job_id}/events`` returns as ``next_id``. A
+    reconnecting client that echoes this value as ``?since=<cursor>`` on a
+    single HTTP backfill picks up cleanly from the first unseen event
+    because ``/events`` returns envelopes with ``event_id > since``. Sending
+    ``next_event_id`` here instead (the id that *will* be assigned next)
+    would silently skip one envelope on every reconnect.
+    """
 
     job = job_store.get(job_id)
     if job is None:
@@ -659,7 +786,20 @@ async def job_updates(websocket: WebSocket, job_id: str) -> None:
         return
 
     await websocket.accept()
+    # Send the LAST broadcast event_id, not the next one. /events treats
+    # ``since`` as "envelopes with event_id > since", so a client that
+    # echoes this value on its next HTTP backfill picks up cleanly from
+    # the first unseen event. Using ``next_event_id`` here would silently
+    # skip one envelope on every reconnect.
+    hello_cursor = job.event_broker.last_event_id
+    hello_envelope = {
+        "type": "hello",
+        "next_id": hello_cursor,
+        "next_index": hello_cursor,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
     try:
+        await websocket.send_json(hello_envelope)
         async for event in job.event_broker.subscribe():
             await websocket.send_json(event)
     except WebSocketDisconnect:

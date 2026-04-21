@@ -31,10 +31,16 @@ def get_host_page(url: str) -> str:
     return f"https://{url_netloc}"
 
 
-def change_domain_to_cr(url: str) -> str:
-    """Replace the domain of the given URL with the configured fallback domain."""
+def change_domain_to_cr(url: str, *, fallback_domain: str | None = None) -> str:
+    """Replace the domain of the given URL with the configured fallback domain.
+
+    When ``fallback_domain`` is supplied (from a per-job ``NetworkContext``) it
+    overrides the module-level default; without it, the process-wide
+    ``FALLBACK_DOMAIN`` is used.
+    """
     parsed_url = urlparse(url)
-    new_parsed_url = parsed_url._replace(netloc=FALLBACK_DOMAIN)
+    target = fallback_domain or FALLBACK_DOMAIN
+    new_parsed_url = parsed_url._replace(netloc=target)
     return urlunparse(new_parsed_url)
 
 

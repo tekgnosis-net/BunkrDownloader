@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.config import NetworkContext
 from src.general_utils import fetch_page
 from src.url_utils import get_url_based_filename
 
@@ -51,7 +52,11 @@ def extract_item_pages(soup: BeautifulSoup, host_page: str) -> list[str] | None:
 
 
 async def extract_all_album_item_pages(
-    initial_soup: BeautifulSoup, host_page: str, url: str,
+    initial_soup: BeautifulSoup,
+    host_page: str,
+    url: str,
+    *,
+    network: NetworkContext | None = None,
 ) -> list[str]:
     """Collect item page links from an album, including pagination."""
     # Extract item pages from the initial soup
@@ -65,7 +70,7 @@ async def extract_all_album_item_pages(
 
     if next_album_pages is not None:
         for next_page in next_album_pages:
-            next_page_soup = await fetch_page(next_page)
+            next_page_soup = await fetch_page(next_page, network=network)
             if next_page_soup is None:
                 raise RuntimeError(f"Failed to load paginated album page: {next_page}")
 
@@ -83,9 +88,20 @@ async def extract_all_album_item_pages(
 async def get_item_download_link(
     item_url: str,
     soup: BeautifulSoup | None = None,
-) -> str:
-    """Retrieve the download link for a specific item from its HTML content."""
-    api_response = get_api_response(item_url, soup=soup)
+    *,
+    network: NetworkContext | None = None,
+) -> str | None:
+    """Retrieve the download link for a specific item from its HTML content.
+
+    Returns ``None`` when the upstream API call fails (network error,
+    non-200 response) so callers can distinguish between "item has no
+    download" and "couldn't reach the API". Previously this path passed
+    ``None`` straight into :func:`decrypt_url`, which indexed into it and
+    raised a confusing ``TypeError`` deep inside the crawler.
+    """
+    api_response = get_api_response(item_url, soup=soup, network=network)
+    if api_response is None:
+        return None
     return decrypt_url(api_response)
 
 
@@ -99,13 +115,17 @@ def get_item_filename(item_soup: BeautifulSoup) -> str:
     return item_filename.encode("latin1").decode("utf-8")
 
 
-def format_item_filename(original_filename: str, url_based_filename: str) -> str:
+def format_item_filename(
+    original_filename: str,
+    url_based_filename: str | None,
+) -> str:
     """Combine two filenames while preserving the extension of the first.
 
-    If the filenames are identical, returns the first filename.
-    If the base of the first filename is found within the second, returns the second
-    filename. Otherwise, combines both bases with a hyphen.
+    When ``url_based_filename`` is ``None`` (the Bunkr API failed upstream so
+    we never resolved a CDN link) the original filename is returned as-is.
     """
+    if url_based_filename is None:
+        return original_filename
     if original_filename == url_based_filename:
         return original_filename
 
@@ -121,9 +141,16 @@ def format_item_filename(original_filename: str, url_based_filename: str) -> str
     return f"{original_base}-{url_base}{extension}"
 
 
-async def get_download_info(item_url: str, item_soup: BeautifulSoup) -> tuple:
+async def get_download_info(
+    item_url: str,
+    item_soup: BeautifulSoup,
+    *,
+    network: NetworkContext | None = None,
+) -> tuple:
     """Gather download information (link and filename) for the item."""
-    item_download_link = await get_item_download_link(item_url, soup=item_soup)
+    item_download_link = await get_item_download_link(
+        item_url, soup=item_soup, network=network,
+    )
     item_filename = get_item_filename(item_soup)
 
     url_based_filename = (
