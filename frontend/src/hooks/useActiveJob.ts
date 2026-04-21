@@ -5,7 +5,9 @@ import { useJobStore } from "../lib/store";
 /**
  * Owns the singleton :class:`JobConnection` and drives its lifecycle from
  * the current ``jobId`` in the store. Consumers get ``start`` / ``stop`` /
- * ``refresh`` closures plus the reactive connection snapshot.
+ * ``refresh`` closures to control the active job connection. For the
+ * reactive connection snapshot (mode, wsAttempt) subscribe directly to
+ * :func:`useConnection` from ``lib/store``.
  */
 export function useActiveJob() {
   const conn = useMemo(() => new JobConnection(), []);

@@ -176,3 +176,13 @@ logs/
 
 # Copilot instructions (local-only for development)
 .github/copilot-instructions.md
+
+# ----------------------------------------------------------------------------
+# Frontend source paths rescued from the Python build-artifact globs above
+# (``lib/`` and ``logs/`` match any directory of those names anywhere in
+# the tree). Negations must come AFTER the general patterns to take effect.
+# ----------------------------------------------------------------------------
+!frontend/src/lib/
+!frontend/src/lib/**
+!frontend/src/components/logs/
+!frontend/src/components/logs/**
