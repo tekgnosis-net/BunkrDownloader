@@ -27,8 +27,10 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
   - [Star History](#star-history)
 
 ## Highlights
-- **Dual experience**: Python CLI (`downloader.py`, `main.py`) or a Chakra UI dashboard powered by FastAPI.
+- **Dual experience**: Python CLI (`downloader.py`, `main.py`) or a polished web dashboard powered by FastAPI.
+- **Liquid-glass UI** 🆕: macOS Sonoma / iOS 17 aesthetic with `backdrop-filter` vibrancy, OKLCH-based color tokens, an Auto / Light / Dark appearance menu that follows your OS, and WCAG-AA contrast in both modes.
 - **Realtime feedback**: Rich terminal UI and a websocket + polling hybrid on the web keep progress/logs alive, even after restarts.
+- **Concurrent + reliable** 🆕: Per-job network context isolates parallel downloads; monotonic event IDs with a WS ↔ polling mutex prevent duplicate or missed progress updates across reconnects; progress bars converge to 100% (no more 99% stalls); sandboxed download root, bounded in-memory event log, optional bearer-token auth, and TTL-scoped job reaper keep long-running containers safe.
 - **Maintenance detection** 🆕: Real-time status page checks detect server maintenance and apply intelligent retry strategies with longer delays or skip affected files.
 - **Smart filtering**: Include/ignore rules, disk-space guard, filename sanitisation, and album pagination handled automatically.
 - **Configurable storage**: Point downloads to any folder (CLI `--custom-path` or web directory picker) with existing files skipped safely.
