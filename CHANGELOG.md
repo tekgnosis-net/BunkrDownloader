@@ -1,5 +1,38 @@
 # CHANGELOG
 
+## v0.11.0 (2026-04-22)
+
+### Feature
+
+* feat(ui): macOS Sonoma / iOS 17 liquid-glass refactor
+
+PR3 of the three-phase refactor. Concentrates the UI redesign + the client-side progress-stream reliability fixes called out in the review.
+
+### Visual redesign (liquid glass)
+- OKLCH-based token system with per-mode glass/surface/ink/backdrop custom properties
+- ``.surface`` primitive: backdrop-filter blur+saturate, @supports fallback, ::after gradient-lit border via mask-composite, layered box-shadow
+- Apple HIG type scale (Large Title → Caption), Inter Variable + JetBrains Mono
+- Tri-state appearance preference (Auto/Light/Dark) with ``matchMedia`` live-sync; monitor icon surfaces the auto-follow state
+- Softer dark tokens (backdrop 18%, surface 27%) so cards clearly float above the page
+
+### Component extraction
+App.jsx (~1472 lines) → App.tsx (~115) + component tree under ``components/{shell,primitives,download,logs,settings}``. TypeScript throughout (non-strict).
+
+### Zustand store
+Tasks stored as ``Map&lt;number, TaskRow&gt;`` mutated in place; granular selectors per row (``useTaskRow``) + shallow-equal ``useActiveTaskIds`` eliminate the full-tree re-render on every event. Completed tasks (100%) are filtered from the active list.
+
+### JobConnection state machine
+Enforces mutual exclusion between WS_ACTIVE and POLL_FALLBACK; consumes the server ``hello`` frame for authoritative cursor; LRU-capped ``seen`` set for event_id dedup; exponential reconnect backoff with polling fallback; WS frames buffered during HTTP backfill and flushed in order after the batch; ``stop()`` resets cursor/seen/attempts/jobId for singleton reuse; ``connectWS()`` closes existing socket before opening a new one; ``startPolling()`` guards against overlapping ticks.
+
+### Backend hygiene landing here
+- ``/api/directories`` auto-creates the sandbox root when no ``basePath`` is supplied, so a fresh checkout no longer 404s on first load. User-supplied paths still 404 for honest feedback.
+- Two new path-sandbox tests cover the asymmetry.
+
+### Verification
+- pylint 10.00/10, 73 tests pass on Python 3.10 and 3.11
+- ``tsc --noEmit`` clean; ``npm run build`` 602 kB (202 kB gzipped)
+- Playwright-verified: auto-theme follows OS, tri-state menu selections persist, dark-mode card hierarchy visible, clean first load with zero console errors ([`6b99841`](https://github.com/tekgnosis-net/BunkrDownloader/commit/6b99841a0d791647d6d916665be99b2cdb40cd6e))
+
 ## v0.10.0 (2026-04-21)
 
 ### Feature
