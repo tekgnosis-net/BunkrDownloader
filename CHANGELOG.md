@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## v0.11.1 (2026-04-22)
+
+### Fix
+
+* fix(docker): build frontend on BUILDPLATFORM, not each TARGETPLATFORM
+
+Pin the frontend-builder stage to \$BUILDPLATFORM so BuildKit runs npm install + tsc + Vite once on the native runner instead of twice under QEMU (amd64 + arm64 emulated). The Vite output (HTML/JS/CSS/woff2) is platform-neutral — both runtime stages copy the same dist/. After PR3 added Inter Variable + JetBrains Mono (fontsource) + TypeScript + Chakra Menu&#39;s transitive deps, the emulated arm64 build of that stage hung past 60 minutes and blocked the v0.10.0 release pipeline. ([`31a0e5e`](https://github.com/tekgnosis-net/BunkrDownloader/commit/31a0e5ed46fecb3ab45cc547fe97274fca9434e1))
+
 ## v0.11.0 (2026-04-22)
 
 ### Feature
