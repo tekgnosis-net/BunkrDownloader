@@ -25,7 +25,7 @@ interface SurfaceProps extends HTMLAttributes<HTMLElement> {
 export const Surface = forwardRef<HTMLElement, SurfaceProps>(
   ({ variant = "card", as: Component = "div", className, children, ...rest }, ref) => (
     <Component
-      ref={ref as Ref<HTMLElement & HTMLDivElement>}
+      ref={ref as Ref<HTMLElement>}
       className={clsx(styles.surface, styles[variant], className)}
       {...rest}
     >

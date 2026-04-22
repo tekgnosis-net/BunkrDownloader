@@ -45,6 +45,7 @@ export class JobConnection {
   private ws: WebSocket | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private pollTickCount = 0;
+  private pollInFlight = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private attempts = 0;
   private seen = new Set<number>();
@@ -52,6 +53,10 @@ export class JobConnection {
   private currentMode: ConnectionMode = "offline";
   private jobId: string | null = null;
   private stopped = false;
+  /** True while a HTTP backfill request is in-flight after a WS hello frame. */
+  private backfilling = false;
+  /** WS events buffered during backfill so they are applied after the HTTP batch. */
+  private wsBuffer: JobEvent[] = [];
 
   start(jobId: string): void {
     this.jobId = jobId;
@@ -64,6 +69,14 @@ export class JobConnection {
     this.clearReconnect();
     this.stopPolling();
     this.closeWs();
+    // Reset all connection-local state so a subsequent start() on the same
+    // singleton instance sees a clean slate (cursor 0, empty seen-set, no
+    // stale jobId).  Without this, a new job whose events start at id=1
+    // would be skipped and polling would request an invalid `since` cursor.
+    this.attempts = 0;
+    this.seen.clear();
+    this.cursor = 0;
+    this.jobId = null;
     if (jobGone) useJobStore.getState().reset();
     this.setMode("offline");
   }
@@ -92,6 +105,21 @@ export class JobConnection {
     this.clearReconnect();
     this.setMode("offline");
 
+    // Close any existing socket (and detach its handlers) before opening a
+    // new one.  Without this, a second connectWS() call (e.g. after a jobId
+    // change or a refresh race) leaves the old socket alive and delivering
+    // events / triggering reconnect callbacks, leaking resources and
+    // corrupting state.
+    const existingWs = this.ws;
+    if (existingWs) {
+      existingWs.onopen = null;
+      existingWs.onmessage = null;
+      existingWs.onclose = null;
+      existingWs.onerror = null;
+      existingWs.close();
+      if (this.ws === existingWs) this.ws = null;
+    }
+
     const ws = new WebSocket(buildWsUrl(this.jobId));
     this.ws = ws;
 
@@ -113,8 +141,21 @@ export class JobConnection {
         this.setMode("ws");
         // If we missed events between our last cursor and the server's
         // hello cursor, pull them via one HTTP backfill before the live
-        // stream continues.
-        if (payload.next_id > this.cursor) void this.backfill(payload.next_id);
+        // stream continues.  Mark backfilling=true so subsequent WS frames
+        // are buffered rather than applied immediately — this prevents newer
+        // events from being committed before the HTTP batch arrives, which
+        // would regress task/status state for ordering-sensitive payloads.
+        if (payload.next_id > this.cursor) {
+          this.backfilling = true;
+          this.wsBuffer = [];
+          void this.backfill(payload.next_id);
+        }
+        return;
+      }
+
+      // While a backfill is in-flight, queue rather than ingest immediately.
+      if (this.backfilling) {
+        this.wsBuffer.push(payload as JobEvent);
         return;
       }
 
@@ -148,7 +189,11 @@ export class JobConnection {
     if (this.pollTimer || !this.jobId) return;
 
     const tick = async () => {
-      if (this.stopped || !this.jobId) return;
+      // Skip this tick if the previous one is still in-flight.  Without this
+      // guard, a slow /events response lets multiple concurrent requests race,
+      // producing out-of-order ingest and cursor corruption.
+      if (this.stopped || !this.jobId || this.pollInFlight) return;
+      this.pollInFlight = true;
       try {
         const { data } = await api.get<EventsResponse>(
           `/downloads/${this.jobId}/events`,
@@ -189,6 +234,8 @@ export class JobConnection {
         if (status === 404) {
           this.stop(true);
         }
+      } finally {
+        this.pollInFlight = false;
       }
     };
 
@@ -206,6 +253,14 @@ export class JobConnection {
       this.ingest(data.events ?? [], data.next_id ?? data.next_index ?? upTo);
     } catch {
       // Backfill is best-effort; the live WS stream will cover the tail.
+    } finally {
+      this.backfilling = false;
+      // Flush events that arrived on the WS while the HTTP batch was in-flight,
+      // now that the backfill is applied and the cursor is up to date.
+      if (this.wsBuffer.length && !this.stopped) {
+        this.ingest(this.wsBuffer);
+      }
+      this.wsBuffer = [];
     }
   }
 
@@ -248,6 +303,7 @@ export class JobConnection {
       this.pollTimer = null;
     }
     this.pollTickCount = 0;
+    this.pollInFlight = false;
   }
 
   private clearReconnect(): void {
@@ -267,6 +323,10 @@ export class JobConnection {
       }
       this.ws = null;
     }
+    // Drop any buffered frames — the socket is gone so they will never be
+    // completed in the right order.
+    this.backfilling = false;
+    this.wsBuffer = [];
   }
 
   private isTerminal(): boolean {

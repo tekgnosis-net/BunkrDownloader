@@ -209,7 +209,7 @@ function upsertTask(tasks: Map<number, TaskRow>, payload: TaskPayload): void {
 
 function computeActiveTaskIds(tasks: Map<number, TaskRow>): number[] {
   const out: number[] = [];
-  for (const [id, row] of tasks) if (row.visible) out.push(id);
+  for (const [id, row] of tasks) if (row.visible && row.completed < 100) out.push(id);
   out.sort((a, b) => a - b);
   return out;
 }
