@@ -16,16 +16,19 @@ interface SurfaceProps extends HTMLAttributes<HTMLElement> {
  * and forwards rest-props. Choose ``variant`` to pick padding + shadow
  * intensity; omit for the default card.
  *
- * The ref is typed as :type:`HTMLElement` rather than the more specific
- * ``HTMLDivElement`` because ``as`` can be ``"section"`` / ``"article"``.
- * That's the common ancestor for the three supported tags and avoids the
- * ``as never`` escape hatch that previously hid real ref/element
- * mismatches from the type system.
+ * The outer ref type is :type:`HTMLElement` — the common ancestor of the
+ * three tags ``as`` supports — so consumers get an honest contract.
+ * Internally we fall to :type:`Ref<never>` to bridge into React's JSX
+ * ref types, which require a specific subtype (``HTMLDivElement`` /
+ * ``HTMLSectionElement`` / ``HTMLHeadingElement``) per tag. ``Ref<never>``
+ * is idiomatic React for polymorphic ``as`` props: it's assignable to
+ * every specific ref type without lying about the runtime element (which
+ * ``Ref<HTMLDivElement>`` would do for ``as="section"``).
  */
 export const Surface = forwardRef<HTMLElement, SurfaceProps>(
   ({ variant = "card", as: Component = "div", className, children, ...rest }, ref) => (
     <Component
-      ref={ref as Ref<HTMLElement>}
+      ref={ref as Ref<never>}
       className={clsx(styles.surface, styles[variant], className)}
       {...rest}
     >
