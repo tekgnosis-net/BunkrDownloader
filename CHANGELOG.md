@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## v0.11.2 (2026-04-22)
+
+### Fix
+
+* fix(deps): resolve 11 open Dependabot alerts
+
+Lockfile + pinned-version bumps; all declared \`^\` ranges already permit the patched versions.
+
+Frontend (10 alerts): axios→1.16.0, rollup→4.60.2, vite→7.3.x, follow-redirects→1.16.0, picomatch→4.0.5, yaml→1.10.3. Three vite alerts are dev-server only (not in the shipped Docker image). The three axios alerts are runtime-relevant (proto-pollution DoS, NO_PROXY SSRF, cloud metadata exfil via header injection).
+
+Backend (1 alert): Requests 2.32.5→2.33.0 (insecure temp file reuse in extract_zipped_paths).
+
+Verified: pylint 10/10, 73 tests pass, tsc clean, vite build clean, npm audit reports 0 vulnerabilities. ([`72898c8`](https://github.com/tekgnosis-net/BunkrDownloader/commit/72898c84c0a6fa00a40a15a17041795c37641ab8))
+
 ## v0.11.1 (2026-04-22)
 
 ### Fix
