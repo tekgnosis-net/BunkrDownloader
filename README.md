@@ -96,6 +96,13 @@ You can configure the deployment by setting the following environment variables 
 | `STATUS_CHECK_ON_FAILURE` 🆕 | Enable real-time status page checks on download failures. | `true` |
 | `STATUS_CACHE_TTL_SECONDS` 🆕 | Cache duration for status page results in seconds. | `60` |
 | `MAINTENANCE_RETRY_STRATEGY` 🆕 | Strategy for maintenance: `backoff` (retry with delays) or `skip` (log and skip). | `backoff` |
+| `ALLOWED_DOWNLOAD_ROOT` 🆕 | Filesystem root that incoming `custom_path` and `/api/directories?basePath` values must resolve under. Rejects any path that escapes this root with HTTP 422. Set to `/` to disable sandboxing (not recommended for public-facing deployments). | `<cwd>/Downloads` |
+| `API_ACCESS_TOKEN` 🆕 | Shared bearer token. When set, every `/api/*` request must carry `Authorization: Bearer <token>` and every `/ws/*` connection must include `?token=<token>`. When unset, the API is unauthenticated and a warning is logged on startup — safe only on a trusted LAN. | *(unset)* |
+| `ALLOWED_ORIGINS` 🆕 | Comma-separated list of CORS-allowed origins (e.g. `https://dash.example.com,https://admin.example.com`). Takes precedence over `ALLOWED_ORIGIN_REGEX` when set. | *(unset)* |
+| `ALLOWED_ORIGIN_REGEX` 🆕 | Regex fallback for CORS when `ALLOWED_ORIGINS` is unset. The default covers Vite dev-server and uvicorn on localhost. | `https?://(localhost\|127\.0\.0\.1)(:\d+)?` |
+| `JOB_EVENT_RETENTION` 🆕 | Maximum number of events retained per job in the in-memory ring buffer. Clients whose cursor falls below the retained floor get a `410 Gone` so they can reset rather than silently missing history. | `2000` |
+| `JOB_TTL_HOURS` 🆕 | Terminal jobs (completed / failed / cancelled) older than this are evicted by the background reaper so long-running containers don't grow unbounded. | `24` |
+| `JOB_REAPER_INTERVAL_SECONDS` 🆕 | How often the reaper scans for stale terminal jobs. | `900` |
 
 Set `IMAGE_TAG` to a published semantic version (for example `1.2.3`) if you want to pin a specific release; otherwise `latest` is used.
 
