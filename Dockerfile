@@ -1,6 +1,12 @@
 # syntax=docker/dockerfile:1
 
-FROM node:20-alpine AS frontend-builder
+# Always build the frontend on the native host arch. The output (HTML/JS/CSS/
+# woff2) is platform-neutral, so building it once under QEMU for each target
+# arch of a multi-platform release turns a 30s Vite build into a 60+ minute
+# emulated npm install + tsc + bundle. --platform=$BUILDPLATFORM pins the
+# stage to the BUILDER's arch; BuildKit will still assemble the final image
+# for each $TARGETPLATFORM from the same dist/.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm install --frozen-lockfile
