@@ -75,17 +75,23 @@
 }
 
 :root[data-theme="dark"] {
-  --surface-base:    color-mix(in oklch, oklch(18% 0.02 250) 72%, transparent 28%);
-  --surface-elevate: color-mix(in oklch, oklch(22% 0.03 250) 65%, transparent 35%);
-  --surface-border:  oklch(40% 0.03 250 / 0.35);
-  --ink:             oklch(96% 0.01 250);
-  --ink-muted:       oklch(70% 0.02 250);
+  /* Surface sits ~8 lightness points above the backdrop so cards read as
+     distinct tiers. The tinted base with a hint of chroma picks up the
+     accent family, which keeps the liquid-glass look from going flat. */
+  --surface-base:    color-mix(in oklch, oklch(27% 0.022 250) 78%, transparent 22%);
+  --surface-elevate: color-mix(in oklch, oklch(32% 0.028 250) 72%, transparent 28%);
+  --surface-border:  oklch(58% 0.035 250 / 0.42);
+  --ink:             oklch(94% 0.012 250);
+  --ink-muted:       oklch(74% 0.02 250);
   --ring:            oklch(70% 0.18 250 / 0.55);
 
-  --backdrop-1: oklch(14% 0.02 250);
-  --backdrop-2: oklch(12% 0.03 270);
-  --backdrop-3: oklch(13% 0.02 210);
-  --backdrop-base: oklch(10% 0.01 250);
+  /* "Deep space" backdrop. Still unambiguously dark, but lifted off pure
+     black so the radial sheen reads and cards don't dissolve into the
+     page. Gradients have a touch more chroma for that Sonoma warmth. */
+  --backdrop-1: oklch(23% 0.03 250);
+  --backdrop-2: oklch(21% 0.04 270);
+  --backdrop-3: oklch(22% 0.03 210);
+  --backdrop-base: oklch(18% 0.018 250);
 }
 
 /* Base reset + global typography. */

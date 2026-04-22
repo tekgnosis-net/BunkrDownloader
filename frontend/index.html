@@ -5,15 +5,35 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Bunkr Downloader</title>
-    <!-- Default to dark mode so the first paint has a liquid-glass look that matches Chakra's initialColorMode. ThemeProvider keeps this in sync on mode toggle. -->
+    <!-- Pre-hydration mode picker. Preference precedence:
+           1. bunkrdownloader:theme-pref  (our tri-state: light|dark|auto, owned by useThemePreference)
+           2. chakra-ui-color-mode        (Chakra's persisted mode — legacy / pre-hook)
+           3. prefers-color-scheme        (OS default)
+         `auto` is treated as "no explicit choice" and falls through to the
+         matchMedia read. Prevents a dark-mode flash on first paint. -->
     <script>
       (function () {
+        var mode = "dark";
         try {
+          var pref = localStorage.getItem("bunkrdownloader:theme-pref");
           var saved = localStorage.getItem("chakra-ui-color-mode");
-          document.documentElement.setAttribute("data-theme", saved === "light" ? "light" : "dark");
+          var prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+          if (pref === "light" || pref === "dark") {
+            mode = pref;
+          } else if (pref === "auto") {
+            // Explicit "follow system" — trust matchMedia over Chakra's
+            // cached value so an OS flip between reloads paints correctly.
+            mode = prefersDark ? "dark" : "light";
+          } else if (saved === "light" || saved === "dark") {
+            // Legacy path: user visited before the tri-state existed.
+            mode = saved;
+          } else {
+            mode = prefersDark ? "dark" : "light";
+          }
         } catch (e) {
-          document.documentElement.setAttribute("data-theme", "dark");
+          /* localStorage blocked — fall through with the default */
         }
+        document.documentElement.setAttribute("data-theme", mode);
       })();
     </script>
   </head>

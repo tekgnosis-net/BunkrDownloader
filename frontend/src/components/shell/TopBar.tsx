@@ -1,8 +1,18 @@
-import { Button, IconButton, Link, Tooltip, useColorMode } from "@chakra-ui/react";
-import { FiGithub, FiMoon, FiRefreshCw, FiSun, FiX } from "react-icons/fi";
+import {
+  Button,
+  IconButton,
+  Link,
+  Menu,
+  MenuButton,
+  MenuItem,
+  MenuList,
+  Tooltip,
+} from "@chakra-ui/react";
+import { FiGithub, FiMonitor, FiMoon, FiRefreshCw, FiSun, FiX } from "react-icons/fi";
 import { StatusPill } from "../primitives/StatusPill";
 import { ConnectionIndicator } from "./ConnectionIndicator";
 import { useJobStatus, useJobId } from "../../lib/store";
+import { useThemePreference, type ThemePreference } from "../../hooks/useThemePreference";
 
 interface TopBarProps {
   appVersion: string;
@@ -17,12 +27,23 @@ interface TopBarProps {
  * rather than pulling job state into the shell so the rest of the tree
  * can render without waiting for the connection to open.
  */
+const THEME_OPTIONS: { value: ThemePreference; label: string; icon: typeof FiSun }[] = [
+  { value: "auto",  label: "Auto",  icon: FiMonitor },
+  { value: "light", label: "Light", icon: FiSun },
+  { value: "dark",  label: "Dark",  icon: FiMoon },
+];
+
 export function TopBar({ appVersion, isStopping, onStop, onRefresh }: TopBarProps) {
-  const { colorMode, toggleColorMode } = useColorMode();
+  const { pref, setPref, resolvedMode } = useThemePreference();
   const jobStatus = useJobStatus();
   const jobId = useJobId();
   const hasJob = jobId !== null;
   const canStop = hasJob && !["completed", "failed", "cancelled"].includes(jobStatus);
+  // "Auto" shows the monitor glyph so the user can tell at a glance that
+  // the page is tracking their OS; the other two prefs show the resolved
+  // appearance to match macOS's Appearance picker in Settings.
+  const activeIcon =
+    pref === "auto" ? <FiMonitor /> : resolvedMode === "dark" ? <FiMoon /> : <FiSun />;
 
   return (
     <header
@@ -89,14 +110,31 @@ export function TopBar({ appVersion, isStopping, onStop, onRefresh }: TopBarProp
         </Button>
       </Tooltip>
 
-      <Tooltip label={`Switch to ${colorMode === "dark" ? "light" : "dark"} theme`} hasArrow>
-        <IconButton
-          aria-label="Toggle colour mode"
-          icon={colorMode === "dark" ? <FiSun /> : <FiMoon />}
-          onClick={toggleColorMode}
-          variant="ghost"
-        />
-      </Tooltip>
+      <Menu placement="bottom-end">
+        <Tooltip
+          label={`Appearance: ${pref === "auto" ? `Auto (${resolvedMode})` : pref[0].toUpperCase() + pref.slice(1)}`}
+          hasArrow
+        >
+          <MenuButton
+            as={IconButton}
+            aria-label="Choose appearance"
+            icon={activeIcon}
+            variant="ghost"
+          />
+        </Tooltip>
+        <MenuList minW="10rem">
+          {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
+            <MenuItem
+              key={value}
+              icon={<Icon />}
+              command={pref === value ? "✓" : undefined}
+              onClick={() => setPref(value)}
+            >
+              {label}
+            </MenuItem>
+          ))}
+        </MenuList>
+      </Menu>
 
       <Tooltip label="View the GitHub source" hasArrow>
         <IconButton

@@ -84,7 +84,10 @@ export function DownloadForm({ settings, onJobStarted }: DownloadFormProps) {
   };
 
   useEffect(() => {
-    void loadDirs();
+    // Silent on mount: the preview listing is a convenience for the picker.
+    // A failure here shouldn't toast on every page load — the user will see
+    // the real error if they explicitly click Pick or Refresh.
+    void loadDirs(undefined, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

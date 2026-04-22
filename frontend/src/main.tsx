@@ -12,6 +12,9 @@ import { ThemeProvider } from "./theme/ThemeProvider";
  * properties injected by ``ThemeProvider`` (which mirrors Chakra's
  * colour mode onto ``<html data-theme>``).
  */
+// useThemePreference owns the pref/system/manual logic. Chakra's own
+// ``useSystemColorMode`` is left off so there's exactly one listener
+// talking to the colour mode — the hook.
 const theme = extendTheme({
   config: {
     initialColorMode: "dark",
