@@ -10,6 +10,7 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 - [BunkrDownloader](#bunkrdownloader)
   - [Table of Contents](#table-of-contents)
   - [Highlights](#highlights)
+  - [Latest Release Updates](#latest-release-updates)
   - [Quick Start](#quick-start)
     - [With Docker Compose (recommended)](#with-docker-compose-recommended)
       - [Common Operations](#common-operations)
@@ -35,6 +36,19 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 - **Smart filtering**: Include/ignore rules, disk-space guard, filename sanitisation, and album pagination handled automatically.
 - **Configurable storage**: Point downloads to any folder (CLI `--custom-path` or web directory picker) with existing files skipped safely.
 - **Container friendly**: Multi-stage Docker image, docker-compose stack, and CI pipeline for publishing multi-arch images to GHCR.
+
+## Latest Release Updates
+
+**v0.11.2** — April 2026
+
+- **Redesigned web UI**: macOS Sonoma / iOS 17 liquid-glass aesthetic with `backdrop-filter` vibrancy, OKLCH color tokens, an Auto / Light / Dark appearance menu that follows your OS, and WCAG-AA contrast in both modes.
+- **Concurrent jobs are safe**: per-job network context isolates parallel downloads (overrides to one job no longer bleed into another); progress bars converge cleanly to 100% (no more 99% stalls) and terminal-state rows are hidden on failure instead of sticking.
+- **Reliable progress streaming**: WebSocket + polling hybrid with monotonic event IDs and client-side dedup survives network blips and page refreshes without duplicate or missing rows.
+- **Hardened defaults**: sandboxed download root via `ALLOWED_DOWNLOAD_ROOT` prevents writes outside your configured folder; optional bearer-token auth via `API_ACCESS_TOKEN` for shared LAN deployments; CORS now defaults to localhost-only and is configurable with `ALLOWED_ORIGINS`.
+- **Memory-safe long-running containers**: bounded in-memory event log (`JOB_EVENT_RETENTION`, default 2000) and TTL-scoped job reaper (`JOB_TTL_HOURS`, default 24) keep RAM usage predictable across long uptimes.
+- **Security maintenance**: 11 Dependabot alerts resolved (axios, vite, rollup, Requests, follow-redirects, picomatch, yaml).
+
+See the [Releases page](https://github.com/tekgnosis-net/BunkrDownloader/releases) for the full changelog.
 
 ## Quick Start
 
