@@ -36,6 +36,8 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 - **Smart filtering**: Include/ignore rules, disk-space guard, filename sanitisation, and album pagination handled automatically.
 - **Configurable storage**: Point downloads to any folder (CLI `--custom-path` or web directory picker) with existing files skipped safely.
 - **Container friendly**: Multi-stage Docker image, docker-compose stack, and CI pipeline for publishing multi-arch images to GHCR.
+  
+**_Note/Advice: Use a VPN. Bunkr sometimes blocks your IP when you bulk download. While it gets unblocked after a while, its best to use this behind a VPN_**
 
 ## Latest Release Updates
 
