@@ -1,0 +1,48 @@
+/*
+ * Rounded accent-gradient progress bar with shimmer fallback.
+ *
+ * The fill width animates on ``--pct`` custom property changes so React
+ * only needs to re-set one CSS variable per update instead of triggering
+ * a restyle of the whole element. ``indeterminate`` mode runs a 40%
+ * shimmer ribbon at a constant cadence for states like "waiting on
+ * HEAD probe" or "backfilling via HTTP".
+ */
+
+.bar {
+  position: relative;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklch, var(--ink) 10%, transparent);
+  overflow: hidden;
+}
+
+.barLg {
+  height: 10px;
+}
+
+.fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--pct, 0%);
+  background: linear-gradient(90deg, var(--accent-400), var(--accent-600));
+  border-radius: inherit;
+  transition: width var(--dur-base) var(--ease-out);
+}
+
+.fill[data-indeterminate="true"] {
+  width: 40%;
+  animation: shimmer 1.6s infinite linear;
+}
+
+@keyframes shimmer {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill[data-indeterminate="true"] {
+    animation: none;
+    width: 100%;
+    opacity: 0.3;
+  }
+}

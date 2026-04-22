@@ -963,6 +963,19 @@ async def list_directories(base_path: str | None = Query(None, alias="basePath")
     except (OSError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # When the caller didn't pass basePath, the UI is asking for the sandbox
+    # root itself — materialise it on demand so a fresh install returns an
+    # empty listing instead of 404ing a user who has never run a download.
+    # User-supplied paths still 404 to give honest feedback for typos.
+    if base_path is None and not resolved.exists():
+        try:
+            resolved.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not create download root: {exc}",
+            ) from exc
+
     if not resolved.exists() or not resolved.is_dir():
         raise HTTPException(status_code=404, detail="Directory not found")
 

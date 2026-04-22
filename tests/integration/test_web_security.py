@@ -62,6 +62,50 @@ class TestPathSandbox:
             assert resp.status_code == 200, resp.text
             assert any("nested" in d for d in resp.json()["directories"])
 
+    def test_directories_default_path_materialises_missing_root(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path,
+    ) -> None:
+        """Fresh install: sandbox root doesn't exist yet.
+
+        Before, the UI mounted, hit /api/directories with no basePath, got
+        404 from the non-existent root, and rendered a scary "Failed to
+        load directories" toast. The endpoint now auto-creates the root on
+        the default path so the picker returns an empty listing instead.
+        """
+
+        missing_root = tmp_path / "Downloads"
+        assert not missing_root.exists()
+        monkeypatch.setattr("src.file_utils.ALLOWED_DOWNLOAD_ROOT", str(missing_root))
+        monkeypatch.setattr("src.web.app.ALLOWED_DOWNLOAD_ROOT", str(missing_root))
+
+        with TestClient(fastapi_app) as client:
+            resp = client.get("/api/directories")
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["directories"] == []
+            assert missing_root.exists() and missing_root.is_dir()
+
+    def test_directories_user_supplied_missing_path_still_404(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path,
+    ) -> None:
+        """Explicit basePath that doesn't exist must not be auto-created.
+
+        Auto-create is only for the default (sandbox-root) path. If the
+        user types a non-existent sub-path, they should see 404 so typos
+        and stale paths surface honestly rather than silently materialising.
+        """
+
+        sandbox_root = tmp_path / "Downloads"
+        sandbox_root.mkdir()
+        monkeypatch.setattr("src.file_utils.ALLOWED_DOWNLOAD_ROOT", str(sandbox_root))
+        monkeypatch.setattr("src.web.app.ALLOWED_DOWNLOAD_ROOT", str(sandbox_root))
+
+        missing_subpath = sandbox_root / "nope"
+        with TestClient(fastapi_app) as client:
+            resp = client.get("/api/directories", params={"basePath": str(missing_subpath)})
+            assert resp.status_code == 404
+            assert not missing_subpath.exists()
+
     def test_custom_path_parent_of_root_accepted_when_effective_is_inside(
         self,
         monkeypatch: pytest.MonkeyPatch,

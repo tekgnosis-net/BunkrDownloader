@@ -1,0 +1,116 @@
+/*
+ * Liquid-glass surface primitive (macOS Sonoma / iOS 17 aesthetic).
+ *
+ * Layering, in order:
+ *   1. .surface is the opaque base (solid tinted fallback)
+ *   2. When backdrop-filter is supported, the base is transparent and
+ *      ::before re-paints the tint behind the blur, producing the
+ *      frosted look
+ *   3. ::after paints a 1px gradient border via mask-composite so the
+ *      stroke has light falloff on one diagonal (HIG "vibrancy edge")
+ *   4. optional SVG noise overlay prevents banding on wide gradient
+ *      backdrops
+ *
+ * Safari compositing note: backdrop-filter on an element with a
+ * transform/filter parent fails silently (webkit bug #170698). Consumers
+ * should avoid transform on Surface ancestors.
+ */
+
+.surface {
+  position: relative;
+  border-radius: var(--radius-lg);
+  background: var(--surface-base);
+  color: var(--ink);
+  box-shadow: var(--shadow-glass-md);
+  isolation: isolate;
+  transition:
+    box-shadow var(--dur-base) var(--ease-out),
+    transform  var(--dur-base) var(--ease-out),
+    background var(--dur-base) var(--ease-out);
+  contain: layout paint;
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .surface {
+    background: transparent;
+    backdrop-filter: blur(var(--blur-md)) saturate(1.8);
+    -webkit-backdrop-filter: blur(var(--blur-md)) saturate(1.8);
+  }
+  .surface::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--surface-base);
+    z-index: -1;
+    pointer-events: none;
+  }
+}
+
+/* Prefers-reduced-transparency: Safari 18+ signal that users want solid
+   surfaces. We drop the blur and restore opaque tinted backgrounds. */
+@media (prefers-reduced-transparency: reduce) {
+  .surface {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: var(--surface-base);
+  }
+  .surface::before { content: none; }
+}
+
+.surface::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklch, var(--ink) 14%, transparent) 0%,
+    color-mix(in oklch, var(--ink)  2%, transparent) 45%,
+    color-mix(in oklch, var(--accent-500) 28%, transparent) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+
+.surface:hover {
+  box-shadow: var(--shadow-glass-lg);
+  transform: translateY(-1px);
+}
+
+.surface:focus-within {
+  box-shadow: var(--shadow-glass-md), var(--shadow-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .surface, .surface:hover {
+    transition: none;
+    transform: none;
+  }
+}
+
+/* Inset / rail / card variants adjust padding + shadow intensity. */
+.card    { padding: var(--space-4); }
+.cardLg  { padding: var(--space-6); }
+.rail    { padding: var(--space-3); box-shadow: var(--shadow-glass-sm); }
+.inset   { padding: var(--space-4); border-radius: var(--radius-md); box-shadow: var(--shadow-glass-sm); }
+
+/*
+ * App-level backdrop: three radial gradients pushed off-canvas give the
+ * page the layered coloured sheen you see in Sonoma. Opacity is tuned
+ * per mode via the --backdrop-* custom properties.
+ */
+.appBackdrop {
+  min-height: 100dvh;
+  background:
+    radial-gradient(1200px 600px at 12% -10%,  var(--backdrop-1), transparent 60%),
+    radial-gradient(900px 500px at 110% 10%,   var(--backdrop-2), transparent 55%),
+    radial-gradient(1100px 700px at 50% 110%,  var(--backdrop-3), transparent 70%),
+    var(--backdrop-base);
+  background-attachment: fixed;
+}
