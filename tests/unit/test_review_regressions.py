@@ -243,11 +243,17 @@ def test_get_item_filename_keeps_nbsp_when_repair_fails() -> None:
 
     from src.crawlers.crawler_utils import get_item_filename
 
-    raw = '<h1 class="text-subs font-semibold text-base sm:text-lg truncate">' \
-          'abcdef xyz.jpg</h1>'
+    # Use ``\u00a0`` rather than a literal NBSP so the failure shape is
+    # explicit at review time — invisible characters in source are easy to
+    # miss and some editors silently normalise them away.
+    expected = "abcdef\u00a0xyz.jpg"
+    raw = (
+        '<h1 class="text-subs font-semibold text-base sm:text-lg truncate">'
+        f"{expected}</h1>"
+    )
     soup = BeautifulSoup(raw, "html.parser")
 
-    assert get_item_filename(soup) == "abcdef xyz.jpg"
+    assert get_item_filename(soup) == expected
 
 
 def test_get_item_filename_repairs_real_mojibake() -> None:
@@ -267,21 +273,23 @@ def test_get_item_filename_repairs_real_mojibake() -> None:
 
 
 def test_get_album_name_keeps_nbsp_when_repair_fails() -> None:
-    """``get_album_name`` used to NameError on the same NBSP failure mode.
+    """``get_album_name`` used to raise ``UnboundLocalError`` on this NBSP path.
 
     The previous ``contextlib.suppress`` swallowed the round-trip exception
     but left ``fixed_album_name`` unbound, so the very next reference raised
-    ``NameError``. The replacement returns the unrepaired text instead.
+    ``UnboundLocalError`` (a ``NameError`` subclass). The replacement returns
+    the unrepaired text instead.
     """
 
     from bs4 import BeautifulSoup
 
     from src.url_utils import get_album_name
 
+    expected = "album\u00a0title"
     raw = (
         '<div class="text-subs font-semibold flex text-base sm:text-lg">'
-        '<h1>album title</h1></div>'
+        f"<h1>{expected}</h1></div>"
     )
     soup = BeautifulSoup(raw, "html.parser")
 
-    assert get_album_name(soup) == "album title"
+    assert get_album_name(soup) == expected
