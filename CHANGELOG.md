@@ -1,5 +1,35 @@
 # CHANGELOG
 
+## v0.11.3 (2026-04-28)
+
+### Chore
+
+* chore(ci): thread RELEASE_PAT into semantic-release
+
+Both the checkout token and the GH_TOKEN env var now resolve to \`secrets.RELEASE_PAT || secrets.GITHUB_TOKEN\`. The fallback means the workflow still runs under GITHUB_TOKEN before the PAT is configured, and switches to the PAT (which can bypass branch protection) once the secret exists. No change to CI or the Docker push step. ([`5dc3c8b`](https://github.com/tekgnosis-net/BunkrDownloader/commit/5dc3c8b65787ea73881f709d96b70bc0a9bd01a5))
+
+### Documentation
+
+* docs(readme): Add VPN usage advice for bulk downloads
+
+Added note about using a VPN for bulk downloads due to potential IP blocking. ([`53d518c`](https://github.com/tekgnosis-net/BunkrDownloader/commit/53d518cc26d97973c5607713234929486c7369a3))
+
+* docs(readme): document env vars introduced by PR2 hardening
+
+Adds seven rows to the Environment Variables table (ALLOWED_DOWNLOAD_ROOT, API_ACCESS_TOKEN, ALLOWED_ORIGINS, ALLOWED_ORIGIN_REGEX, JOB_EVENT_RETENTION, JOB_TTL_HOURS, JOB_REAPER_INTERVAL_SECONDS) so the knobs referenced in Latest Release Updates all have a documented default + description. Matches .env.sample. ([`14108bd`](https://github.com/tekgnosis-net/BunkrDownloader/commit/14108bdf7098773de52c2d860871f14e6ee7b600))
+
+* docs(readme): add Latest Release Updates section for v0.11.2
+
+Adds a six-bullet user-facing summary of v0.11.2 (redesigned UI, concurrency safety, progress reliability, path/auth/CORS hardening, memory bounds, Dependabot sweep) between Highlights and Quick Start, plus a ToC entry. ([`df1f13d`](https://github.com/tekgnosis-net/BunkrDownloader/commit/df1f13d26d61b322dde03eb514313e7d4ee9ec7d))
+
+* docs(readme): liquid-glass UI highlight + reliability summary + dark hero shot
+
+Two new Highlights bullets (liquid-glass UI, concurrent + reliable), one phrasing fix (drop &#34;Chakra UI dashboard&#34; since Chakra is now only headless primitives), and a fresh dark-mode \`assets/WebUI.png\` at 1680×940 showing the redesigned download page. ([`15b7e68`](https://github.com/tekgnosis-net/BunkrDownloader/commit/15b7e68067f45090cc5085780b6c2d333f6007e3))
+
+### Fix
+
+* fix(crawler): tolerate NBSP in filenames so albums don&#39;t fail mid-batch ([`f23bbed`](https://github.com/tekgnosis-net/BunkrDownloader/commit/f23bbede57d7efdc035cadade42c9d0087d9ed08))
+
 ## v0.11.2 (2026-04-22)
 
 ### Fix
