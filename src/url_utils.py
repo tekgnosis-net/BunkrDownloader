@@ -6,7 +6,6 @@ extracting relevant identifiers for albums or videos.
 
 from __future__ import annotations
 
-import contextlib
 import html
 import logging
 import re
@@ -133,16 +132,14 @@ def get_album_name(soup: BeautifulSoup) -> str | None:
     raw_album_name = name_container.find("h1").get_text(strip=True)
     unescaped_album_name = html.unescape(raw_album_name)
 
-    # Attempt to fix mojibake (UTF-8 bytes mis-decoded as Latin-1). If encoding/decoding
-    # fails, keep the decoded version
-    with contextlib.suppress(UnicodeEncodeError, UnicodeDecodeError):
-        fixed_album_name = unescaped_album_name.encode("latin1").decode("utf-8")
-
-    # Only replace if the repaired string differs
-    if fixed_album_name != unescaped_album_name:
-        return fixed_album_name
-
-    return unescaped_album_name
+    # Repair mojibake (real bytes were UTF-8 but ``requests`` decoded them as
+    # Latin-1 due to a missing charset). The round-trip fails when the text
+    # holds a genuine Latin-1 char like U+00A0 from an unescaped &nbsp; — in
+    # that case the unrepaired text is already correct, so keep it.
+    try:
+        return unescaped_album_name.encode("latin1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return unescaped_album_name
 
 
 def get_item_type(item_page: str) -> str | None:
