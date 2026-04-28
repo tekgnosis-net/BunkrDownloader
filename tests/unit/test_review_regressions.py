@@ -227,3 +227,69 @@ async def test_album_unresolved_link_finishes_task_without_download() -> None:
     hidden = [u for _, u in mgr.task_updates if u["visible"] is False]
     assert hidden, "task must be hidden when link resolution fails"
     assert any("Download link unresolved" in evt for evt, _ in mgr.logs)
+
+
+def test_get_item_filename_keeps_nbsp_when_repair_fails() -> None:
+    """A filename with a literal U+00A0 must not crash the album.
+
+    Some album pages render filenames whose text contains an unescaped
+    ``&nbsp;``. ``BeautifulSoup.get_text`` decodes that to U+00A0; the
+    historical ``.encode('latin1').decode('utf-8')`` round-trip then
+    exploded because 0xA0 is not a legal UTF-8 start byte. Behaviour
+    now: keep the unrepaired text and let the download proceed.
+    """
+
+    from bs4 import BeautifulSoup
+
+    from src.crawlers.crawler_utils import get_item_filename
+
+    # Use ``\u00a0`` rather than a literal NBSP so the failure shape is
+    # explicit at review time — invisible characters in source are easy to
+    # miss and some editors silently normalise them away.
+    expected = "abcdef\u00a0xyz.jpg"
+    raw = (
+        '<h1 class="text-subs font-semibold text-base sm:text-lg truncate">'
+        f"{expected}</h1>"
+    )
+    soup = BeautifulSoup(raw, "html.parser")
+
+    assert get_item_filename(soup) == expected
+
+
+def test_get_item_filename_repairs_real_mojibake() -> None:
+    """Mojibake from a charset-less response must still be repaired."""
+
+    from bs4 import BeautifulSoup
+
+    from src.crawlers.crawler_utils import get_item_filename
+
+    # ``Ã©`` is what ``é`` looks like after UTF-8 bytes (0xC3 0xA9) were
+    # mis-decoded as Latin-1; the round-trip should bring back ``é``.
+    raw = '<h1 class="text-subs font-semibold text-base sm:text-lg truncate">' \
+          'cafÃ©.jpg</h1>'
+    soup = BeautifulSoup(raw, "html.parser")
+
+    assert get_item_filename(soup) == "café.jpg"
+
+
+def test_get_album_name_keeps_nbsp_when_repair_fails() -> None:
+    """``get_album_name`` used to raise ``UnboundLocalError`` on this NBSP path.
+
+    The previous ``contextlib.suppress`` swallowed the round-trip exception
+    but left ``fixed_album_name`` unbound, so the very next reference raised
+    ``UnboundLocalError`` (a ``NameError`` subclass). The replacement returns
+    the unrepaired text instead.
+    """
+
+    from bs4 import BeautifulSoup
+
+    from src.url_utils import get_album_name
+
+    expected = "album\u00a0title"
+    raw = (
+        '<div class="text-subs font-semibold flex text-base sm:text-lg">'
+        f"<h1>{expected}</h1></div>"
+    )
+    soup = BeautifulSoup(raw, "html.parser")
+
+    assert get_album_name(soup) == expected

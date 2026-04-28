@@ -106,13 +106,23 @@ async def get_item_download_link(
 
 
 def get_item_filename(item_soup: BeautifulSoup) -> str:
-    """Extract the filename from the provided HTML soup."""
+    """Extract the filename from the provided HTML soup.
+
+    The latin1->utf-8 round-trip undoes mojibake from responses served without a
+    charset header (``requests`` falls back to ISO-8859-1). It fails for filenames
+    that contain a genuine non-ASCII Latin-1 character — most often a U+00A0
+    non-breaking space from an unescaped ``&nbsp;`` entity — so we fall back to the
+    unrepaired text instead of crashing the whole album.
+    """
     item_filename_container = item_soup.find(
         "h1",
         {"class": "text-subs font-semibold text-base sm:text-lg truncate"},
     )
     item_filename = item_filename_container.get_text()
-    return item_filename.encode("latin1").decode("utf-8")
+    try:
+        return item_filename.encode("latin1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return item_filename
 
 
 def format_item_filename(
