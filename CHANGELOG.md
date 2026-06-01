@@ -1,5 +1,44 @@
 # CHANGELOG
 
+## v0.11.4 (2026-06-01)
+
+### Fix
+
+* fix(crawler): allowlist the page-declared signing host (SSRF guard)
+
+The signing endpoint URL is read from page content; in the web path the
+originating album URL is user-controlled, so a crafted/MITM&#39;d page could point
+`signUrl` at an internal host (cloud metadata, localhost) and turn the
+server-side sign request into an SSRF.
+
+Require `signUrl` to be HTTPS with a host under an allowlisted domain
+(`SIGN_URL_ALLOWED_HOSTS`, default `cdn.cr`, env-overridable via
+`BUNKR_SIGN_ALLOWED_HOSTS` since Bunkr rotates infrastructure). Untrusted hosts
+short-circuit before any network call. Addresses Copilot review on PR #14. ([`746b279`](https://github.com/tekgnosis-net/BunkrDownloader/commit/746b2795031bebf04199d991a3fd83c85c23112b))
+
+* fix(crawler): resolve downloads via signed CDN URLs (Bunkr dropped /api/vs)
+
+Bunkr retired the `POST /api/vs` + XOR-decrypt scheme the downloader relied on;
+that endpoint now returns 404 for every slug, so every album failed to resolve
+any file. Item pages now embed the raw CDN URL (`jsCDN`) and a signing endpoint
+(`signUrl`) as plaintext inline `var` declarations, and gate the CDN behind a
+short-lived `token`/`ex` pair issued by that endpoint (unsigned CDN URL -&gt; 403).
+
+Replace `get_api_response`/`decrypt_url` with `extract_media_sources` (parses
+`jsCDN`/`signUrl` from the item soup, unescaping JSON `\/`) and
+`get_signed_download_url` (GETs `{signUrl}?path={encodeURIComponent(path)}` and
+appends the returned token/ex to the CDN URL). `get_item_download_link` now reads
+the item soup instead of POSTing a slug; the `None`-on-failure contract and the
+downstream filename logic are unchanged, and the existing item-page re-fetch on
+retry (album_downloader) transparently re-signs the ~2h-lived URLs.
+
+Album item extraction and the filename `&lt;h1&gt;` selector were unaffected. The now
+unused `MEDIA_SLUG_REGEX`/`get_media_slug`/`get_identifier` in url_utils are left
+for a separate cleanup to keep this diff focused on the breakage.
+
+Verified end-to-end against the reported album (a/dGhNIRNV): 17 items extracted,
+first item resolves to a token-signed URL that HEADs 200 with a 1.15 GB body. ([`4e46f98`](https://github.com/tekgnosis-net/BunkrDownloader/commit/4e46f9878c6b9a4380ecdcaea8cc34bdc067451a))
+
 ## v0.11.3 (2026-04-28)
 
 ### Chore
