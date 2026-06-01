@@ -55,6 +55,16 @@ DEFAULT_USER_AGENT = os.getenv(
 )
 DEFAULT_FALLBACK_DOMAIN = os.getenv("BUNKR_FALLBACK_DOMAIN", "bunkr.cr")
 
+# SSRF guard: the media signing endpoint host is read from page content, so it
+# is only requested when it is HTTPS and its host is (a suffix of) an allowlisted
+# domain. Bunkr serves signing from ``*.cdn.cr``; override via env (comma-list)
+# when the infrastructure rotates.
+SIGN_URL_ALLOWED_HOSTS: tuple[str, ...] = tuple(
+    host.strip()
+    for host in os.getenv("BUNKR_SIGN_ALLOWED_HOSTS", "cdn.cr").split(",")
+    if host.strip()
+)
+
 STATUS_PAGE = DEFAULT_STATUS_PAGE  # The URL of the status page for checking
                                    # service availability.
 BUNKR_API = DEFAULT_BUNKR_API      # The API for retrieving encryption data.
