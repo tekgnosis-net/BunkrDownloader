@@ -41,6 +41,16 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 ## Latest Release Updates
 
+**v0.11.4** — June 2026
+
+- **Downloads work again**: Bunkr retired the `/api/vs` endpoint (it now returns 404 for every file) and switched to **signed CDN URLs** — item pages embed the raw CDN link plus a signing endpoint that issues a short-lived access token. The crawler was rewritten to follow this new flow, restoring album and single-file downloads.
+- **SSRF hardening**: the signing endpoint host is read from page content, so it is now validated (HTTPS + host allowlist) before any server-side request is made. Override the allowlist with `BUNKR_SIGN_ALLOWED_HOSTS` (default `cdn.cr`) if Bunkr rotates its signing infrastructure.
+
+**v0.11.3** — April 2026
+
+- **Albums no longer fail mid-batch on odd filenames**: non-breaking spaces (`&nbsp;` / U+00A0) in titles are now tolerated instead of crashing the whole album.
+- **Release plumbing**: semantic-release runs under a dedicated release token so tagged releases and multi-arch GHCR image publishing are reliable.
+
 **v0.11.2** — April 2026
 
 - **Redesigned web UI**: macOS Sonoma / iOS 17 liquid-glass aesthetic with `backdrop-filter` vibrancy, OKLCH color tokens, an Auto / Light / Dark appearance menu that follows your OS, and WCAG-AA contrast in both modes.
@@ -105,6 +115,7 @@ You can configure the deployment by setting the following environment variables 
 | `JOB_EVENT_RETENTION` 🆕 | Maximum number of events retained per job in the in-memory ring buffer. Clients whose cursor falls below the retained floor get a `410 Gone` so they can reset rather than silently missing history. | `2000` |
 | `JOB_TTL_HOURS` 🆕 | Terminal jobs (completed / failed / cancelled) older than this are evicted by the background reaper so long-running containers don't grow unbounded. | `24` |
 | `JOB_REAPER_INTERVAL_SECONDS` 🆕 | How often the reaper scans for stale terminal jobs. | `900` |
+| `BUNKR_SIGN_ALLOWED_HOSTS` 🆕 | Comma-separated allowlist of hosts the page-declared media signing endpoint may use (SSRF guard). A candidate matches when it equals an entry or is a subdomain of one, and only HTTPS is accepted. Override when Bunkr rotates its signing infrastructure off `cdn.cr`. | `cdn.cr` |
 
 Set `IMAGE_TAG` to a published semantic version (for example `1.2.3`) if you want to pin a specific release; otherwise `latest` is used.
 
