@@ -41,6 +41,10 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 ## Latest Release Updates
 
+**v0.11.5** — June 2026
+
+- **Security maintenance**: cleared the open frontend security advisories — axios bumped to 1.16.1 (`GHSA-654m-c8p4-x5fp`, Proxy-Authorization header injection via prototype pollution) and the build-time postcss to 8.5.15 (`GHSA-qx2v-qp2m-jg93`, CSS-stringify XSS). `npm audit` now reports zero vulnerabilities.
+
 **v0.11.4** — June 2026
 
 - **Downloads work again**: Bunkr retired the `/api/vs` endpoint (it now returns 404 for every file) and switched to **signed CDN URLs** — item pages embed the raw CDN link plus a signing endpoint that issues a short-lived access token. The crawler was rewritten to follow this new flow, restoring album and single-file downloads.
@@ -50,15 +54,6 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 - **Albums no longer fail mid-batch on odd filenames**: non-breaking spaces (`&nbsp;` / U+00A0) in titles are now tolerated instead of crashing the whole album.
 - **Release plumbing**: semantic-release runs under a dedicated release token so tagged releases and multi-arch GHCR image publishing are reliable.
-
-**v0.11.2** — April 2026
-
-- **Redesigned web UI**: macOS Sonoma / iOS 17 liquid-glass aesthetic with `backdrop-filter` vibrancy, OKLCH color tokens, an Auto / Light / Dark appearance menu that follows your OS, and WCAG-AA contrast in both modes.
-- **Concurrent jobs are safe**: per-job network context isolates parallel downloads (overrides to one job no longer bleed into another); progress bars converge cleanly to 100% (no more 99% stalls) and terminal-state rows are hidden on failure instead of sticking.
-- **Reliable progress streaming**: WebSocket + polling hybrid with monotonic event IDs and client-side dedup survives network blips and page refreshes without duplicate or missing rows.
-- **Hardened defaults**: sandboxed download root via `ALLOWED_DOWNLOAD_ROOT` prevents writes outside your configured folder; optional bearer-token auth via `API_ACCESS_TOKEN` for shared LAN deployments; CORS now defaults to localhost-only and is configurable with `ALLOWED_ORIGINS`.
-- **Memory-safe long-running containers**: bounded in-memory event log (`JOB_EVENT_RETENTION`, default 2000) and TTL-scoped job reaper (`JOB_TTL_HOURS`, default 24) keep RAM usage predictable across long uptimes.
-- **Security maintenance**: 11 Dependabot alerts resolved (axios, vite, rollup, Requests, follow-redirects, picomatch, yaml).
 
 See the [Releases page](https://github.com/tekgnosis-net/BunkrDownloader/releases) for the full changelog.
 
