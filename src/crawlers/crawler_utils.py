@@ -11,7 +11,7 @@ from src.config import NetworkContext
 from src.general_utils import fetch_page
 from src.url_utils import get_url_based_filename
 
-from .api_utils import decrypt_url, get_api_response
+from .api_utils import get_signed_download_url
 
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup
@@ -91,18 +91,21 @@ async def get_item_download_link(
     *,
     network: NetworkContext | None = None,
 ) -> str | None:
-    """Retrieve the download link for a specific item from its HTML content.
+    """Retrieve the signed CDN download link for an item from its HTML content.
 
-    Returns ``None`` when the upstream API call fails (network error,
-    non-200 response) so callers can distinguish between "item has no
-    download" and "couldn't reach the API". Previously this path passed
-    ``None`` straight into :func:`decrypt_url`, which indexed into it and
-    raised a confusing ``TypeError`` deep inside the crawler.
+    Bunkr embeds the raw CDN URL and a signing endpoint in the item page and
+    gates the CDN behind a short-lived token; :func:`get_signed_download_url`
+    reads both from ``soup`` and exchanges them for a signed URL. Returns
+    ``None`` (logging ``item_url`` for context) when the page lacks the expected
+    markers or signing fails, so callers can distinguish "item has no download"
+    from a crash.
     """
-    api_response = get_api_response(item_url, soup=soup, network=network)
-    if api_response is None:
+    if soup is None:
         return None
-    return decrypt_url(api_response)
+    signed_url = get_signed_download_url(soup, network=network)
+    if signed_url is None:
+        logging.warning("Could not resolve download link for %s", item_url)
+    return signed_url
 
 
 def get_item_filename(item_soup: BeautifulSoup) -> str:

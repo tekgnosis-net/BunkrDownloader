@@ -1,76 +1,133 @@
-"""Module that provides utilities for interacting with the Bunkr API.
+"""Module that resolves signed media download URLs from Bunkr item pages.
 
-It contains functions to:
-- Request encryption-related metadata (e.g., slug resolution, encrypted URLs).
-- Decrypt encrypted URLs using a time-based secret key derived from the API response.
-- Handle network errors and log warnings or exceptions during API requests.
+Bunkr retired the old ``POST /api/vs`` + XOR-decrypt scheme (the endpoint now
+returns 404). Item pages instead embed the raw CDN URL (``jsCDN``) and a signing
+endpoint (``signUrl``) as plaintext inline ``var`` declarations. The CDN itself
+is gated behind a short-lived ``token``/``ex`` pair issued by that endpoint, so
+resolving a download is now two stateless steps:
+
+1. read ``jsCDN`` + ``signUrl`` out of the page,
+2. ``GET {signUrl}?path={encoded CDN path}`` to obtain ``{token, ex}`` and append
+   them to the raw CDN URL.
 """
 
 from __future__ import annotations
 
 import logging
-from base64 import b64decode
-from itertools import cycle
-from math import floor
+import re
 from typing import TYPE_CHECKING
+from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 import requests
 
-from src.config import BUNKR_API, HEADERS, HTTPStatus, NetworkContext
-from src.url_utils import get_identifier
+from src.config import HEADERS, HTTPStatus, NetworkContext
 
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup
 
+# Inline ``var jsCDN = "..."`` / ``var signUrl = "..."`` declarations. The values
+# are captured verbatim (including any JSON ``\/`` slash-escaping) and unescaped
+# by ``_unescape``.
+CDN_URL_REGEX = re.compile(r'jsCDN\s*=\s*"([^"]+)"')
+SIGN_URL_REGEX = re.compile(r'signUrl\s*=\s*"([^"]+)"')
 
-def get_api_response(
-    item_url: str,
-    soup: BeautifulSoup | None = None,
-    *,
-    network: NetworkContext | None = None,
-) -> dict[str, bool | str | int] | None:
-    """Fetch encryption data for a given slug from the Bunkr API."""
-    slug = get_identifier(item_url, soup=soup)
-    api_url = network.bunkr_api if network else BUNKR_API
-    headers = network.headers if network else HEADERS
+
+def _unescape(value: str) -> str:
+    """Undo the JSON ``\\/`` slash-escaping Bunkr emits in inline script vars."""
+
+    return value.replace("\\/", "/")
+
+
+def extract_media_sources(soup: BeautifulSoup) -> tuple[str, str] | None:
+    """Pull the raw CDN URL and signing endpoint from an item page.
+
+    Returns ``(cdn_url, sign_url)`` with slashes unescaped, or ``None`` when
+    either marker is absent (page shape changed, or the item was removed).
+    """
+    cdn_url: str | None = None
+    sign_url: str | None = None
+
+    for script in soup.find_all("script"):
+        script_text = script.get_text()
+        if cdn_url is None:
+            cdn_match = CDN_URL_REGEX.search(script_text)
+            if cdn_match:
+                cdn_url = _unescape(cdn_match.group(1))
+        if sign_url is None:
+            sign_match = SIGN_URL_REGEX.search(script_text)
+            if sign_match:
+                sign_url = _unescape(sign_match.group(1))
+        if cdn_url and sign_url:
+            break
+
+    if not cdn_url or not sign_url:
+        return None
+    return cdn_url, sign_url
+
+
+def _request_sign_token(
+    sign_url: str,
+    cdn_path: str,
+    headers: dict[str, str],
+) -> tuple[str, str] | None:
+    """Exchange a CDN path for a ``(token, ex)`` pair via the signing endpoint.
+
+    The request mirrors the page's own ``signUrl + '?path=' +
+    encodeURIComponent(path)`` call; ``None`` is returned on any network error,
+    non-200 response, or malformed payload.
+    """
+    # ``quote(safe="")`` matches ``encodeURIComponent`` (encodes the path's
+    # slashes to ``%2F``), which is what the signing endpoint expects.
+    request_url = f"{sign_url}?path={quote(cdn_path, safe='')}"
 
     try:
         with requests.Session() as session:
             session.headers.update(headers)
-            response = session.post(api_url, json={"slug": slug})
+            response = session.get(request_url)
 
         if response.status_code != HTTPStatus.OK:
-            log_message = f"Failed to fetch encryption data for slug '{slug}'"
-            logging.warning(log_message)
+            logging.warning(
+                "Sign endpoint returned %s for path '%s'",
+                response.status_code,
+                cdn_path,
+            )
             return None
 
-    except requests.RequestException as req_err:
-        log_message = f"Error while requesting encryption data for '{slug}': {req_err}"
-        logging.exception(log_message)
+        payload = response.json()
+        return str(payload["token"]), str(payload["ex"])
+
+    except (requests.RequestException, ValueError, KeyError, TypeError) as err:
+        logging.exception("Failed to sign CDN url for '%s': %s", cdn_path, err)
         return None
 
-    return response.json()
 
+def get_signed_download_url(
+    soup: BeautifulSoup | None,
+    *,
+    network: NetworkContext | None = None,
+) -> str | None:
+    """Resolve the time-limited, signed CDN URL for an item page.
 
-def decrypt_url(api_response: dict[str, bool | str | int]) -> str | None:
-    """Decrypt an encrypted URL using a time-based secret key."""
-    try:
-        timestamp = api_response["timestamp"]
-        encrypted_bytes = b64decode(api_response["url"])
-
-    except KeyError as key_err:
-        log_message = f"Missing required encryption data field: {key_err}"
-        logging.exception(log_message)
+    Reads ``jsCDN``/``signUrl`` from ``soup``, exchanges the CDN path for a
+    ``token``/``ex`` pair, and returns the CDN URL with those query parameters
+    appended. Returns ``None`` (rather than raising) whenever the page lacks the
+    expected markers or signing fails, so callers can distinguish "no link" from
+    a crash.
+    """
+    if soup is None:
         return None
 
-    # Generate the secret key based on the timestamp
-    time_key = floor(timestamp / 3600)
-    secret_key = f"SECRET_KEY_{time_key}"
+    sources = extract_media_sources(soup)
+    if sources is None:
+        logging.warning("Could not locate jsCDN/signUrl on item page")
+        return None
 
-    # Create a cyclic iterator for the secret key
-    secret_key_bytes = secret_key.encode("utf-8")
-    cycled_key = cycle(secret_key_bytes)
+    cdn_url, sign_url = sources
+    headers = network.headers if network else HEADERS
+    token_pair = _request_sign_token(sign_url, urlparse(cdn_url).path, headers)
+    if token_pair is None:
+        return None
 
-    # Decrypt the data
-    decrypted_bytes = bytearray(byte ^ next(cycled_key) for byte in encrypted_bytes)
-    return decrypted_bytes.decode("utf-8", errors="ignore")
+    token, expiry = token_pair
+    parsed = urlparse(cdn_url)
+    return urlunparse(parsed._replace(query=urlencode({"token": token, "ex": expiry})))

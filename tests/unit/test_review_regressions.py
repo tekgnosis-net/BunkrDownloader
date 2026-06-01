@@ -50,24 +50,29 @@ async def test_hello_next_id_matches_events_endpoint_cursor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_item_download_link_returns_none_on_api_failure() -> None:
-    """Guard against the old ``decrypt_url(None)`` TypeError.
+async def test_get_item_download_link_returns_none_on_resolution_failure() -> None:
+    """Signed-URL resolution failure must propagate ``None``, not crash.
 
-    When ``get_api_response`` can't reach the API (network error, non-200),
-    the helper must propagate ``None`` instead of indexing into it.
+    Bunkr's item page may lack the ``jsCDN``/``signUrl`` markers (item removed)
+    or the signing endpoint may error; either way the helper must return
+    ``None`` so callers can distinguish "no download" from a thrown exception.
     """
 
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup("<html><body></body></html>", "html.parser")
+
     with patch(
-        "src.crawlers.crawler_utils.get_api_response",
+        "src.crawlers.crawler_utils.get_signed_download_url",
         return_value=None,
     ):
-        result = await get_item_download_link("https://bunkr.test/v/abc")
+        result = await get_item_download_link("https://bunkr.test/f/abc", soup=soup)
         assert result is None
 
 
 @pytest.mark.asyncio
 async def test_get_download_info_tolerates_missing_link() -> None:
-    """``get_download_info`` should return ``(None, filename)`` on API failure."""
+    """``get_download_info`` should return ``(None, filename)`` on resolution failure."""
 
     from bs4 import BeautifulSoup
 
@@ -78,10 +83,10 @@ async def test_get_download_info_tolerates_missing_link() -> None:
     soup = BeautifulSoup(html, "html.parser")
 
     with patch(
-        "src.crawlers.crawler_utils.get_api_response",
+        "src.crawlers.crawler_utils.get_signed_download_url",
         return_value=None,
     ):
-        link, filename = await get_download_info("https://bunkr.test/v/abc", soup)
+        link, filename = await get_download_info("https://bunkr.test/f/abc", soup)
         assert link is None
         assert "foo" in filename
 
