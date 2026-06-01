@@ -1,5 +1,36 @@
 # CHANGELOG
 
+## v0.11.5 (2026-06-01)
+
+### Documentation
+
+* docs(readme): refresh Latest Release Updates for v0.11.4
+
+Add user-facing v0.11.4 notes (signed-CDN-URL download fix after Bunkr dropped
+/api/vs, plus the SSRF allowlist guard) and the previously-undocumented v0.11.3
+(NBSP filename tolerance, release plumbing) above the existing v0.11.2 block.
+
+Document the new BUNKR_SIGN_ALLOWED_HOSTS knob in the Environment Variables
+table and .env.sample, matching the project norm that env vars referenced in
+the release notes carry a documented default + description. ([`362573f`](https://github.com/tekgnosis-net/BunkrDownloader/commit/362573ff08572b54bacfc0b87de351b7074819c9))
+
+### Fix
+
+* fix(deps): bump postcss to 8.5.15 (GHSA-qx2v-qp2m-jg93)
+
+Clears the remaining npm-audit moderate finding: postcss &lt;8.5.10 has an XSS via
+an unescaped `&lt;/style&gt;` in its CSS stringify output. postcss is a build-only
+transitive of Vite (never shipped to the browser), so real-world risk is low,
+but `npm audit fix` resolves it cleanly with no major bumps. `npm audit` now
+reports 0 vulnerabilities; frontend build output is byte-identical. ([`f5db5fc`](https://github.com/tekgnosis-net/BunkrDownloader/commit/f5db5fc5a5da36267489f25b69a7fa913d2685af))
+
+* fix(deps): bump axios to 1.16.1 (GHSA-654m-c8p4-x5fp)
+
+Resolves Dependabot alert #17 (low): axios 1.15.2 is vulnerable to a
+Proxy-Authorization header injection via prototype pollution (incomplete
+null-prototype fix), patched in 1.16.0. package.json already allows ^1.7.7, so
+this is a lockfile-only bump to 1.16.1; frontend `npm run build` verified green. ([`b68ac10`](https://github.com/tekgnosis-net/BunkrDownloader/commit/b68ac10e09e3ec9922689f5e4dae28ceb590cd8e))
+
 ## v0.11.4 (2026-06-01)
 
 ### Fix
