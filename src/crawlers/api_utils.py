@@ -20,7 +20,7 @@ from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 import requests
 
-from src.config import HEADERS, HTTPStatus, NetworkContext
+from src.config import HEADERS, HTTPStatus, NetworkContext, SIGN_URL_ALLOWED_HOSTS
 
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup
@@ -36,6 +36,24 @@ def _unescape(value: str) -> str:
     """Undo the JSON ``\\/`` slash-escaping Bunkr emits in inline script vars."""
 
     return value.replace("\\/", "/")
+
+
+def _is_trusted_sign_url(sign_url: str) -> bool:
+    """Return whether ``sign_url`` is safe to issue a server-side request to.
+
+    The signing host is read from page content; in the web path the originating
+    URL is user-controlled, so a crafted page could point ``signUrl`` at an
+    internal host (cloud metadata, localhost) and turn the sign request into an
+    SSRF. Require HTTPS and an allowlisted host (see ``SIGN_URL_ALLOWED_HOSTS``).
+    """
+    parsed = urlparse(sign_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False
+    host = parsed.hostname
+    return any(
+        host == allowed or host.endswith(f".{allowed}")
+        for allowed in SIGN_URL_ALLOWED_HOSTS
+    )
 
 
 def extract_media_sources(soup: BeautifulSoup) -> tuple[str, str] | None:
@@ -123,6 +141,10 @@ def get_signed_download_url(
         return None
 
     cdn_url, sign_url = sources
+    if not _is_trusted_sign_url(sign_url):
+        logging.warning("Refusing untrusted media signing endpoint: %s", sign_url)
+        return None
+
     headers = network.headers if network else HEADERS
     token_pair = _request_sign_token(sign_url, urlparse(cdn_url).path, headers)
     if token_pair is None:

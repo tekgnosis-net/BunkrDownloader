@@ -108,6 +108,23 @@ def test_get_signed_download_url_returns_none_when_sources_missing() -> None:
     assert get_signed_download_url(soup) is None
 
 
+def test_get_signed_download_url_rejects_untrusted_sign_host() -> None:
+    # A malicious/MITM'd page could point ``signUrl`` at an internal host to turn
+    # the server-side sign request into an SSRF. The host must be allowlisted, and
+    # an untrusted host must short-circuit BEFORE any network call is made.
+    html = ITEM_PAGE_HTML.replace(
+        "https://glb-apisign.cdn.cr/sign",
+        "http://169.254.169.254/sign",
+    )
+    soup = BeautifulSoup(html, "html.parser")
+    session = _fake_session(_ok_sign_response("leaked", 1))
+
+    with patch("src.crawlers.api_utils.requests.Session", return_value=session):
+        assert get_signed_download_url(soup) is None
+
+    session.get.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_get_item_download_link_resolves_signed_url() -> None:
     soup = BeautifulSoup(ITEM_PAGE_HTML, "html.parser")
