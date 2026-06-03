@@ -42,6 +42,7 @@ from src.config import (
     get_network_settings,
 )
 from src.file_utils import PathOutsideSandboxError, resolve_within_allowed_root
+from src.web.update_check import get_update_status
 
 _env_version = os.getenv("APP_VERSION", "")
 if _env_version and _env_version.lower() != "latest":
@@ -1051,3 +1052,24 @@ async def read_meta() -> MetaResponse:
     """Expose runtime metadata for the frontend shell."""
 
     return MetaResponse(version=APP_VERSION)
+
+
+class UpdateStatusResponse(BaseModel):
+    """Latest-release comparison driving the version badge's update notice."""
+
+    current_version: str
+    latest_version: str | None
+    update_available: bool
+
+
+@app.get("/api/update-check", response_model=UpdateStatusResponse)
+def read_update_check() -> UpdateStatusResponse:
+    """Report whether a newer GitHub release exists than the running build.
+
+    Defined as a sync ``def`` so Starlette runs the blocking GitHub fetch in its
+    threadpool; the cache in :mod:`src.web.update_check` keeps the upstream call
+    to at most once per TTL window. Always 200 — a GitHub outage degrades to
+    ``update_available: false`` rather than surfacing an error to the UI.
+    """
+
+    return UpdateStatusResponse(**get_update_status(APP_VERSION))
