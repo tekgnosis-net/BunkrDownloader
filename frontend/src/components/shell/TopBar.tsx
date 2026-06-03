@@ -16,10 +16,14 @@ import { useThemePreference, type ThemePreference } from "../../hooks/useThemePr
 
 interface TopBarProps {
   appVersion: string;
+  latestVersion: string | null;
+  updateAvailable: boolean;
   isStopping: boolean;
   onStop: () => void;
   onRefresh: () => void;
 }
+
+const RELEASES_URL = "https://github.com/tekgnosis-net/BunkrDownloader/releases";
 
 /**
  * Title, version badge, status pill, connection indicator, and the
@@ -33,7 +37,14 @@ const THEME_OPTIONS: { value: ThemePreference; label: string; icon: typeof FiSun
   { value: "dark",  label: "Dark",  icon: FiMoon },
 ];
 
-export function TopBar({ appVersion, isStopping, onStop, onRefresh }: TopBarProps) {
+export function TopBar({
+  appVersion,
+  latestVersion,
+  updateAvailable,
+  isStopping,
+  onStop,
+  onRefresh,
+}: TopBarProps) {
   const { pref, setPref, resolvedMode } = useThemePreference();
   const jobStatus = useJobStatus();
   const jobId = useJobId();
@@ -65,19 +76,51 @@ export function TopBar({ appVersion, isStopping, onStop, onRefresh }: TopBarProp
       >
         Bunkr Downloader
       </h1>
-      <span
+      <div
         style={{
-          fontSize: 12,
-          padding: "2px 10px",
-          borderRadius: "var(--radius-pill)",
-          background: "color-mix(in oklch, var(--ink) 8%, var(--surface-base))",
-          color: "var(--ink-muted)",
-          border: "1px solid var(--surface-border)",
-          fontVariantNumeric: "tabular-nums",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-start",
+          gap: "var(--space-1)",
         }}
       >
-        v{appVersion}
-      </span>
+        <span
+          style={{
+            fontSize: 12,
+            padding: "2px 10px",
+            borderRadius: "var(--radius-pill)",
+            background: "color-mix(in oklch, var(--ink) 8%, var(--surface-base))",
+            color: "var(--ink-muted)",
+            border: "1px solid var(--surface-border)",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          v{appVersion}
+        </span>
+        {updateAvailable && latestVersion && (
+          <Link
+            href={RELEASES_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="A newer release is available — open the GitHub releases page"
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              padding: "1px 8px",
+              borderRadius: "var(--radius-pill)",
+              background: "color-mix(in oklch, var(--accent-500) 16%, var(--surface-base))",
+              color: "var(--accent-500)",
+              border: "1px solid color-mix(in oklch, var(--accent-500) 40%, transparent)",
+              fontVariantNumeric: "tabular-nums",
+              textDecoration: "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            ↑ update available:{" "}
+            {latestVersion.startsWith("v") ? latestVersion : `v${latestVersion}`}
+          </Link>
+        )}
+      </div>
       <ConnectionIndicator />
 
       <div style={{ flex: 1 }} />

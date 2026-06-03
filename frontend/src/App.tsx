@@ -40,6 +40,16 @@ const DEFAULT_SETTINGS: AppSettings = {
     "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0",
 };
 
+interface UpdateInfo {
+  latestVersion: string | null;
+  updateAvailable: boolean;
+}
+
+// The backend caches the GitHub release for 6h, so re-polling more often just
+// returns the same cached verdict; this keeps a long-lived dashboard current
+// without needless round-trips.
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 /**
  * Top-level composition — thin shell that wires the store, the active-job
  * connection, and the Chakra Tabs that switch between Download and
@@ -51,6 +61,10 @@ export default function App() {
     DEFAULT_SETTINGS,
   );
   const [appVersion, setAppVersion] = useState("dev");
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo>({
+    latestVersion: null,
+    updateAvailable: false,
+  });
   const [isStopping, setIsStopping] = useState(false);
   const toast = useToast();
   const job = useActiveJob();
@@ -60,6 +74,20 @@ export default function App() {
     void api.get("/meta").then(({ data }) => {
       if (data?.version) setAppVersion(String(data.version));
     }).catch(() => void 0);
+  }, []);
+
+  useEffect(() => {
+    const check = () => {
+      void api.get("/update-check").then(({ data }) => {
+        setUpdateInfo({
+          latestVersion: data?.latest_version ?? null,
+          updateAvailable: Boolean(data?.update_available),
+        });
+      }).catch(() => void 0);
+    };
+    check();
+    const id = window.setInterval(check, UPDATE_CHECK_INTERVAL_MS);
+    return () => window.clearInterval(id);
   }, []);
 
   const handleStop = async () => {
@@ -81,6 +109,8 @@ export default function App() {
     <AppShell>
       <TopBar
         appVersion={appVersion}
+        latestVersion={updateInfo.latestVersion}
+        updateAvailable={updateInfo.updateAvailable}
         isStopping={isStopping}
         onStop={handleStop}
         onRefresh={job.refresh}
