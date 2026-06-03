@@ -41,6 +41,11 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 ## Latest Release Updates
 
+**v0.12.0** — June 2026
+
+- **Update notifications in the web UI**: the dashboard now checks GitHub for newer releases and shows an "↑ update available: vX.Y.Z" badge directly under the version when your running build is out of date, linking straight to the Releases page.
+- **Light on GitHub**: the check runs server-side and is cached (~6h), so all browser sessions share a single upstream request instead of each polling GitHub — and a GitHub hiccup simply shows no badge rather than erroring.
+
 **v0.11.5** — June 2026
 
 - **Security maintenance**: cleared the open frontend security advisories — axios bumped to 1.16.1 (`GHSA-654m-c8p4-x5fp`, Proxy-Authorization header injection via prototype pollution) and the build-time postcss to 8.5.15 (`GHSA-qx2v-qp2m-jg93`, CSS-stringify XSS). `npm audit` now reports zero vulnerabilities.
@@ -49,11 +54,6 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 - **Downloads work again**: Bunkr retired the `/api/vs` endpoint (it now returns 404 for every file) and switched to **signed CDN URLs** — item pages embed the raw CDN link plus a signing endpoint that issues a short-lived access token. The crawler was rewritten to follow this new flow, restoring album and single-file downloads.
 - **SSRF hardening**: the signing endpoint host is read from page content, so it is now validated (HTTPS + host allowlist) before any server-side request is made. Override the allowlist with `BUNKR_SIGN_ALLOWED_HOSTS` (default `cdn.cr`) if Bunkr rotates its signing infrastructure.
-
-**v0.11.3** — April 2026
-
-- **Albums no longer fail mid-batch on odd filenames**: non-breaking spaces (`&nbsp;` / U+00A0) in titles are now tolerated instead of crashing the whole album.
-- **Release plumbing**: semantic-release runs under a dedicated release token so tagged releases and multi-arch GHCR image publishing are reliable.
 
 See the [Releases page](https://github.com/tekgnosis-net/BunkrDownloader/releases) for the full changelog.
 
