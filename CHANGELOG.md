@@ -1,5 +1,42 @@
 # CHANGELOG
 
+## v0.12.0 (2026-06-03)
+
+### Documentation
+
+* docs(readme): add v0.11.5 to Latest Release Updates
+
+Note the frontend security maintenance (axios + postcss advisories cleared) and
+trim the now four-deep list back to the three most recent releases per the
+section&#39;s rolling convention. ([`f7fd812`](https://github.com/tekgnosis-net/BunkrDownloader/commit/f7fd8122a498e8f33728fa41a3c946fb3aa1c5b2))
+
+### Feature
+
+* feat(web): add periodic update-available checker (#18)
+
+* docs(spec): design for periodic update-available checker
+
+* feat(web): add periodic update-available checker
+
+Surface &#34;update available: vX.Y.Z&#34; under the version badge when a newer
+GitHub release exists than the running build.
+
+- src/web/update_check.py: pure version parse/compare helpers plus a
+  lock-guarded, 6h-TTL cache around GitHub&#39;s releases/latest. Every
+  failure path (timeout, non-200, missing tag, unparseable version)
+  collapses to &#34;no update available&#34; and is cached so an outage cannot
+  be hammered.
+- GET /api/update-check (sync def -&gt; Starlette threadpool): returns
+  {current_version, latest_version, update_available}; always 200, so a
+  GitHub outage degrades to update_available:false instead of erroring.
+- Frontend polls /update-check on mount and every 6h, rendering a link
+  pill (to the Releases page) directly under the version badge, only
+  when an update exists.
+
+Backend logic is fully covered by tests/unit/test_update_check.py
+(parse/compare edges, cache TTL, GitHub-failure degradation, endpoint
+shape). Frontend stays logic-free, validated by `npm run build`. ([`13950e7`](https://github.com/tekgnosis-net/BunkrDownloader/commit/13950e76dfd34e1a7f4a00754b7dec37545cce95))
+
 ## v0.11.5 (2026-06-01)
 
 ### Documentation
