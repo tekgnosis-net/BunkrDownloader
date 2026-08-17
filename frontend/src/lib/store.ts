@@ -18,6 +18,15 @@ export interface LogEntry {
   origin?: string;
 }
 
+/** A settled URL from the current job, in the order the server reported it. */
+export interface UrlResult {
+  url: string;
+  index: number;
+  total: number;
+  status: "succeeded" | "failed";
+  error: string | null;
+}
+
 export type ConnectionMode = "offline" | "ws" | "poll";
 
 export interface ConnectionState {
@@ -35,6 +44,12 @@ export interface JobState {
   logRetention: number;
   /** Sorted array of task IDs currently in flight — stable reference unless a task is added/removed. */
   activeTaskIds: number[];
+  /**
+   * Settled URLs for this job, deduped by ``index``. Event replay after a
+   * WebSocket reconnect re-delivers envelopes the client has already seen,
+   * so consumers need this list to be idempotent rather than append-only.
+   */
+  urlResults: UrlResult[];
   connection: ConnectionState;
   error: string | null;
 }
@@ -58,6 +73,7 @@ function emptyState(retention = 200): JobState {
     logs: [],
     logRetention: retention,
     activeTaskIds: [],
+    urlResults: [],
     connection: { mode: "offline", wsAttempt: 0 },
     error: null,
   };
@@ -87,6 +103,8 @@ export const useJobStore = create<JobState & JobActions>((set, get) => ({
       let nextOverall = state.overall;
       let nextStatus = state.jobStatus;
       let nextError = state.error;
+      const seenUrlIndexes = new Set(state.urlResults.map((r) => r.index));
+      const newUrlResults: UrlResult[] = [];
 
       for (const ev of events) {
         switch (ev.type) {
@@ -125,6 +143,19 @@ export const useJobStore = create<JobState & JobActions>((set, get) => ({
             });
             break;
           }
+          case "url_result": {
+            if (!seenUrlIndexes.has(ev.index)) {
+              seenUrlIndexes.add(ev.index);
+              newUrlResults.push({
+                url: ev.url,
+                index: ev.index,
+                total: ev.total,
+                status: ev.status,
+                error: ev.error ?? null,
+              });
+            }
+            break;
+          }
           case "maintenance_detected": {
             newLogs.push({
               event_id: ev.event_id,
@@ -151,11 +182,18 @@ export const useJobStore = create<JobState & JobActions>((set, get) => ({
 
       const activeTaskIds = tasksChanged ? computeActiveTaskIds(tasks) : state.activeTaskIds;
 
+      // Keep the reference stable when nothing settled this batch — the
+      // effect that drains this list runs on identity.
+      const urlResults = newUrlResults.length
+        ? [...state.urlResults, ...newUrlResults]
+        : state.urlResults;
+
       return {
         ...state,
         tasks,
         activeTaskIds,
         logs,
+        urlResults,
         overall: nextOverall,
         jobStatus: nextStatus,
         error: nextError,
@@ -231,6 +269,7 @@ export const useActiveTaskIds = () =>
 export const useTaskRow = (id: number) =>
   useJobStore((s) => s.tasks.get(id));
 
+export const useUrlResults = () => useJobStore((s) => s.urlResults);
 export const useOverall = () => useJobStore((s) => s.overall);
 export const useJobStatus = () => useJobStore((s) => s.jobStatus);
 export const useConnection = () => useJobStore((s) => s.connection);

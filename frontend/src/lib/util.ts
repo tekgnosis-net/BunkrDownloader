@@ -5,6 +5,32 @@ export const parseUrls = (value: string): string[] =>
     .map((u) => u.trim())
     .filter(Boolean);
 
+/**
+ * Drop the first line matching ``url`` from a textarea value.
+ *
+ * Comparison is on the trimmed line so leading/trailing whitespace the user
+ * left in doesn't strand an entry. Returns the input unchanged when there is
+ * no match, which keeps repeated calls (event replay) idempotent.
+ */
+export const removeUrlLine = (value: string, url: string): string => {
+  const target = url.trim();
+  if (!target) return value;
+  const lines = value.split(/\r?\n/);
+  const at = lines.findIndex((line) => line.trim() === target);
+  if (at === -1) return value;
+  lines.splice(at, 1);
+  return lines.join("\n");
+};
+
+/** Append URLs to a textarea value, skipping any already present. */
+export const appendUrlLines = (value: string, urls: string[]): string => {
+  const existing = new Set(parseUrls(value));
+  const additions = urls.map((u) => u.trim()).filter((u) => u && !existing.has(u));
+  if (!additions.length) return value;
+  const base = value.replace(/\s+$/, "");
+  return base ? `${base}\n${additions.join("\n")}` : additions.join("\n");
+};
+
 /** Split a whitespace/comma-separated include/ignore list. */
 export const parseList = (value: string): string[] =>
   value

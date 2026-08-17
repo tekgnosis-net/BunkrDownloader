@@ -12,13 +12,21 @@ import {
   useToast,
 } from "@chakra-ui/react";
 import { FiFolder, FiRefreshCw } from "react-icons/fi";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Surface } from "../primitives/Surface";
 import { DirectoryPickerDialog } from "./DirectoryPickerDialog";
+import { UrlOutcomeLists } from "./UrlOutcomeLists";
 import { api } from "../../lib/api";
-import { parseList, parseUrls, optionalTrimmed } from "../../lib/util";
+import {
+  appendUrlLines,
+  parseList,
+  parseUrls,
+  optionalTrimmed,
+  removeUrlLine,
+} from "../../lib/util";
 import { usePersistentState } from "../../hooks/usePersistentState";
-import { useJobStore } from "../../lib/store";
+import { useJobStore, useUrlResults } from "../../lib/store";
+import { useOutcomeStore } from "../../lib/outcomes";
 
 interface Settings {
   logLevel: "debug" | "info" | "warning" | "error";
@@ -62,6 +70,36 @@ export function DownloadForm({ settings, onJobStarted }: DownloadFormProps) {
   const [loadingDirs, setLoadingDirs] = useState(false);
   const picker = useDisclosure();
   const toast = useToast();
+  const urlResults = useUrlResults();
+  // The exact lines POSTed for the running job. The server echoes URLs after
+  // pydantic has normalised them, so results are matched back to the user's
+  // input by 1-based index; this array is what makes that possible.
+  const submittedUrls = useRef<string[]>([]);
+  // Indexes already moved out of the textarea. Event replay after a
+  // WebSocket reconnect re-delivers results, and this keeps that a no-op.
+  const drainedIndexes = useRef<Set<number>>(new Set());
+
+  // Move each settled URL out of the input box the moment its verdict lands,
+  // so an interrupted batch leaves exactly the unprocessed URLs behind.
+  useEffect(() => {
+    const pending = urlResults.filter((r) => !drainedIndexes.current.has(r.index));
+    if (!pending.length) return;
+
+    const record = useOutcomeStore.getState().record;
+    setForm((prev) => {
+      let urls = prev.urls;
+      for (const result of pending) {
+        drainedIndexes.current.add(result.index);
+        // Prefer the line the user actually typed — it is what gets written
+        // back to the textarea on requeue. Falls back to the server's value
+        // when the page was reloaded mid-job and the ref is empty.
+        const line = submittedUrls.current[result.index - 1] ?? result.url;
+        urls = removeUrlLine(urls, line);
+        record(line, result.status, result.error);
+      }
+      return { ...prev, urls };
+    });
+  }, [urlResults, setForm]);
 
   const loadDirs = async (basePath?: string, silent = false) => {
     setLoadingDirs(true);
@@ -105,6 +143,8 @@ export function DownloadForm({ settings, onJobStarted }: DownloadFormProps) {
     }
     setIsSubmitting(true);
     useJobStore.getState().reset();
+    submittedUrls.current = urls;
+    drainedIndexes.current = new Set();
     try {
       const network = {
         status_page: optionalTrimmed(settings.statusPage),
@@ -223,6 +263,10 @@ export function DownloadForm({ settings, onJobStarted }: DownloadFormProps) {
           </div>
         </form>
       </Surface>
+
+      <UrlOutcomeLists
+        onRequeue={(urls) => setForm((p) => ({ ...p, urls: appendUrlLines(p.urls, urls) }))}
+      />
 
       <DirectoryPickerDialog
         isOpen={picker.isOpen}

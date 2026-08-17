@@ -62,6 +62,23 @@ export interface MaintenanceEvent extends BaseEvent {
 }
 
 /**
+ * Per-URL verdict for a batch job, emitted once per submitted URL.
+ *
+ * ``index`` is 1-based against the list the client POSTed. Match on it
+ * rather than on ``url``: the server echoes the value after pydantic's
+ * ``AnyHttpUrl`` has normalised it, so it need not be byte-identical to
+ * the line the user typed.
+ */
+export interface UrlResultEvent extends BaseEvent {
+  type: "url_result";
+  url: string;
+  index: number;
+  total: number;
+  status: "succeeded" | "failed";
+  error: string | null;
+}
+
+/**
  * WS-only frame sent before the live stream begins. ``next_id`` is the
  * cursor the client should use for an HTTP backfill (``?since=<cursor>``)
  * if its local state is behind. Mirrors ``GET /events``'s ``next_id`` so
@@ -80,7 +97,8 @@ export type JobEvent =
   | TaskUpdatedEvent
   | OverallEvent
   | StatusEvent
-  | MaintenanceEvent;
+  | MaintenanceEvent
+  | UrlResultEvent;
 
 export function isHelloFrame(msg: { type: string }): msg is HelloFrame {
   return msg.type === "hello";

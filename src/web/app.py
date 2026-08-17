@@ -636,6 +636,40 @@ def _status_event(status: JobStatus, message: str | None = None) -> dict[str, An
     return payload
 
 
+def _url_result_event(
+    url: str,
+    index: int,
+    total: int,
+    *,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Construct the per-URL outcome envelope for a batch job.
+
+    ``index`` is the 1-based position of the URL in the submitted list. The
+    client matches on it rather than on the URL string because pydantic's
+    ``AnyHttpUrl`` normalises what the operator typed, so the echoed value is
+    not guaranteed to be byte-identical to their input line.
+    """
+
+    return {
+        "type": "url_result",
+        "url": url,
+        "index": index,
+        "total": total,
+        "status": "failed" if error else "succeeded",
+        "error": error,
+    }
+
+
+def _failure_summary(failures: list[str], total: int) -> str:
+    """Summarise which URLs failed, truncating so the message stays readable."""
+
+    shown = ", ".join(failures[:3])
+    if len(failures) > 3:
+        shown += f", and {len(failures) - 3} more"
+    return f"{len(failures)}/{total} URLs failed: {shown}"
+
+
 def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
     """Build a CLI-like namespace from an incoming HTTP download request."""
 
@@ -656,6 +690,56 @@ def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
         user_agent=request.network.user_agent if request.network else None,
         fallback_domain=request.network.fallback_domain if request.network else None,
     )
+
+
+async def _process_job_urls(
+    job: Job,
+    manager: WebLiveManager,
+    bunkr_status: dict[str, str],
+) -> tuple[int, list[str]]:
+    """Download every URL in the job, isolating per-URL failures.
+
+    One dead album must not discard the work queued behind it — a single bad
+    link in a fifty-line batch would otherwise cost the operator the whole
+    run. Each URL's verdict is published as a ``url_result`` envelope so the
+    client can move that line out of its input list and into a succeeded or
+    failed list, leaving exactly the unprocessed URLs behind for a restart.
+
+    Returns the number of successes and the list of URLs that failed.
+    """
+
+    total = len(job.request.urls)
+    succeeded = 0
+    failures: list[str] = []
+
+    for index, url in enumerate(job.request.urls, start=1):
+        if total > 1:
+            manager.update_log(
+                event="Processing URL",
+                details=f"{index}/{total}: {url}",
+            )
+        manager.log_debug(event="Debug", details=f"Starting download for {url}")
+        args = _build_namespace(str(url), job.request)
+        try:
+            await validate_and_download(bunkr_status, str(url), manager, args=args)
+        # Cancellation is job-wide, never a per-URL outcome. The explicit
+        # re-raise keeps the broad handler below from downgrading a cancel
+        # into "this one URL failed, carry on with the rest".
+        except asyncio.CancelledError:  # pylint: disable=try-except-raise
+            raise
+        except Exception as url_err:  # pylint: disable=broad-exception-caught
+            logger.warning("Job %s: URL %s failed: %s", job.job_id, url, url_err)
+            failures.append(str(url))
+            manager.update_log(event="URL failed", details=f"{url}: {url_err}")
+            job.event_broker.publish(
+                _url_result_event(str(url), index, total, error=str(url_err)),
+            )
+        else:
+            succeeded += 1
+            manager.log_debug(event="Debug", details=f"Completed download for {url}")
+            job.event_broker.publish(_url_result_event(str(url), index, total))
+
+    return succeeded, failures
 
 
 async def _run_download_job(job: Job) -> None:
@@ -690,20 +774,21 @@ async def _run_download_job(job: Job) -> None:
             event="Debug",
             details=f"Fetched bunkr status for {len(bunkr_status)} hosts",
         )
-        for index, url in enumerate(job.request.urls, start=1):
-            if len(job.request.urls) > 1:
-                manager.update_log(
-                    event="Processing URL",
-                    details=f"{index}/{len(job.request.urls)}: {url}",
-                )
-            manager.log_debug(event="Debug", details=f"Starting download for {url}")
-            args = _build_namespace(str(url), job.request)
-            await validate_and_download(bunkr_status, str(url), manager, args=args)
-            manager.log_debug(event="Debug", details=f"Completed download for {url}")
+        succeeded, failures = await _process_job_urls(job, manager, bunkr_status)
+        total = len(job.request.urls)
 
         manager.stop()
-        job.status = JobStatus.COMPLETED
-        job.event_broker.publish(_status_event(JobStatus.COMPLETED))
+
+        # Partial success is still success: the job only fails when nothing at
+        # all came through, so the client keeps whatever it did manage to get.
+        if failures:
+            job.error = _failure_summary(failures, total)
+        if failures and not succeeded:
+            job.status = JobStatus.FAILED
+            job.event_broker.publish(_status_event(JobStatus.FAILED, job.error))
+        else:
+            job.status = JobStatus.COMPLETED
+            job.event_broker.publish(_status_event(JobStatus.COMPLETED))
 
     except asyncio.CancelledError as cancel_err:
         logger.info("Download job %s cancelled", job.job_id)

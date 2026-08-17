@@ -147,6 +147,7 @@ python3 main.py [shared flags]
 - **Job launcher** – paste URLs, set filters, toggle the disk check, or choose a custom destination via the directory browser.
 - **Progress panes** – overall progress + per-file stripes; tooltips explain each control and metric.
 - **Live log** – chronological events, retries, and skips with full timestamps.
+- **Batch ledger** – each URL leaves the input box the moment it settles and lands in a **Succeeded** or **Failed** list, so whatever is still in the box is exactly what has not been processed yet. A dead link no longer aborts the rest of the batch, the lists survive a browser restart, and **Requeue** pushes the failed URLs back into the input box for another attempt.
 - **Resilient updates** – when a WebSocket drops (e.g. container restart) the UI polls `/api/downloads/{job}/events` until the socket reconnects.
 - **Source shortcut** – in-app link to the GitHub repository for quick reference.
 - **Version badge** – header shows the semantic version embedded in the running container image.
