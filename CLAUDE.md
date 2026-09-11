@@ -43,7 +43,11 @@ cd frontend && npm install && npm run dev  # Vite dev server proxies /api and /w
 
 # Full stack via Docker
 docker compose up --build
+
+# Behind a VPN (gluetun + Surfshark WireGuard) — standalone file, NOT an override
+docker compose -f docker-compose.vpn.yml up -d
 ```
+`docker-compose.vpn.yml` duplicates the `bunkr` service on purpose (`network_mode: service:gluetun` forbids `ports`, and overrides can't remove them); keep it in sync when the base compose changes.
 Note: `.env.sample` sets `API_PORT=8887` and `VITE_API_PROXY=http://localhost:8887`, while `docker-compose.yml` and `vite.config.js` default to 8000. If you copy the sample, the ports line up with each other but not with a bare `uvicorn` on 8000.
 
 ### Release
