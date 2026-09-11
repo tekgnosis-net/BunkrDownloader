@@ -1,0 +1,78 @@
+# BunkrDownloader behind a VPN (gluetun + Surfshark WireGuard).
+#
+# Use this file ON ITS OWN, not merged with docker-compose.yml:
+#
+#   docker compose -f docker-compose.vpn.yml up -d
+#
+# It is a separate, self-contained file because the app container joins
+# gluetun's network stack (network_mode: service:gluetun), which forbids
+# publishing ports on the app service, and a compose override cannot remove
+# the port mapping the base file declares. Synology Container Manager also
+# expects a single compose file per project, so this doubles as the file to
+# paste there. Keep the `bunkr` service definition in sync with
+# docker-compose.yml when the base changes.
+#
+# All bunkr traffic leaves only through the tunnel; gluetun's firewall
+# (kill switch) drops everything else if the VPN goes down. The web UI stays
+# reachable on the LAN because the port is published on the gluetun
+# container and explicitly allowed inbound via FIREWALL_INPUT_PORTS.
+#
+# Required in .env: WIREGUARD_PRIVATE_KEY, WIREGUARD_ADDRESSES
+# (see README "Running behind a VPN" for how to get them from Surfshark).
+
+services:
+  gluetun:
+    image: qmcgaw/gluetun:v3
+    container_name: bunkr-vpn
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      VPN_SERVICE_PROVIDER: surfshark
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:?set WIREGUARD_PRIVATE_KEY in .env}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:?set WIREGUARD_ADDRESSES in .env}
+      SERVER_COUNTRIES: ${VPN_SERVER_COUNTRIES:-Netherlands}
+      # "auto" picks the kernel module when present and falls back to the
+      # built-in userspace implementation (needed on Synology DSM kernels).
+      WIREGUARD_IMPLEMENTATION: ${WIREGUARD_IMPLEMENTATION:-auto}
+      # Some NAS kernels advertise GSO on /dev/net/tun but reject coalesced
+      # writes ("write /dev/net/tun: invalid argument"). Set to "off" then.
+      WIREGUARD_GSO: ${WIREGUARD_GSO:-on}
+      # Allow LAN clients to reach the web UI through the published port.
+      FIREWALL_INPUT_PORTS: "8000"
+      TZ: ${TZ:-UTC}
+    restart: unless-stopped
+
+  bunkr:
+    image: ghcr.io/tekgnosis-net/bunkrdownloader:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${IMAGE_TAG:-latest}
+        APP_UID: ${UID:-1000}
+        APP_GID: ${GID:-1000}
+    container_name: bunkr
+    pull_policy: always
+    user: "${UID:-1000}:${GID:-1000}"
+    # Share gluetun's network namespace: no ports here, the UI is published
+    # on the gluetun service above.
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      API_HOST: ${API_HOST:-0.0.0.0}
+      API_PORT: ${API_PORT:-8000}
+      SESSION_LOG_PATH: ${SESSION_LOG_PATH:-/app/logs/session.log}
+      STATUS_CHECK_ON_FAILURE: ${STATUS_CHECK_ON_FAILURE:-true}
+      STATUS_CACHE_TTL_SECONDS: ${STATUS_CACHE_TTL_SECONDS:-60}
+      MAINTENANCE_RETRY_STRATEGY: ${MAINTENANCE_RETRY_STRATEGY:-backoff}
+    volumes:
+      - ${DOWNLOADS_DIR:-./Downloads}:/app/Downloads
+      - ${LOGS_DIR:-./logs}:/app/logs
+    restart: unless-stopped
