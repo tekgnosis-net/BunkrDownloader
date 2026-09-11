@@ -152,7 +152,7 @@ docker compose -f docker-compose.vpn.yml up -d
 
 **Synology DSM 7 (Container Manager)**: create a *Project*, paste `docker-compose.vpn.yml` as the compose file and add the `.env` next to it. Set `UID`/`GID` to your DSM user (see `id <user>` over SSH) and point `DOWNLOADS_DIR`/`LOGS_DIR` at shared-folder paths such as `/volume1/Bunkr-Downloads`. The DSM kernel has no WireGuard module, so gluetun uses its userspace implementation automatically. If gluetun fails with `/dev/net/tun` missing, load the module once over SSH with `sudo insmod /lib/modules/tun.ko` and start the project again.
 
-The `bunkr` service in `docker-compose.vpn.yml` mirrors the one in `docker-compose.yml`; when the base file changes, update both.
+The `bunkr` service in `docker-compose.vpn.yml` mirrors the one in `docker-compose.yml`; when the base file changes, update both. Because both containers share one network namespace, gluetun's control server is moved from its default `:8000` to `127.0.0.1:8001` so it does not collide with the app; if you edit the file by hand, keep that line.
 
 ## CLI Usage
 ```bash
