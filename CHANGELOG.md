@@ -1,5 +1,43 @@
 # CHANGELOG
 
+## v0.13.0 (2026-09-12)
+
+### Documentation
+
+* docs(readme): add v0.12.0 to Latest Release Updates (#19)
+
+Document the new web-UI update-available notifier and trim the rolling
+list to the three most recent releases (0.12.0 / 0.11.5 / 0.11.4). ([`aa0fe70`](https://github.com/tekgnosis-net/BunkrDownloader/commit/aa0fe7006b48e14e6d5f0116d85f6fb8708ea171))
+
+### Feature
+
+* feat(docker): add VPN compose variant (gluetun + Surfshark WireGuard) (#21)
+
+* feat(docker): add VPN compose variant (gluetun + Surfshark WireGuard)
+
+Add docker-compose.vpn.yml, a self-contained stack that runs the app
+behind a gluetun sidecar connected to Surfshark over WireGuard. All
+downloader traffic leaves through the tunnel and gluetun&#39;s firewall acts
+as a kill switch; the web UI is published on the gluetun container and
+allowed inbound via FIREWALL_INPUT_PORTS so it stays reachable on the
+LAN. It is a separate file rather than an override because
+network_mode: service:gluetun forbids ports on the app service and
+compose overrides cannot remove list entries.
+
+Document the Surfshark key steps, the new .env knobs and Synology DSM 7
+Container Manager notes (userspace WireGuard, tun module, UID/GID and
+shared-folder paths) in README and .env.sample.
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE
+
+* fix(docker): move gluetun control server off port 8000
+
+gluetun&#39;s HTTP control server listens on :8000 by default, which collides
+with uvicorn in the shared network namespace so the app cannot bind. Move
+it to 127.0.0.1:8001 (loopback only) and document why.
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`1ac01ff`](https://github.com/tekgnosis-net/BunkrDownloader/commit/1ac01ff8277239aed93988befba0d53bea8fdb7a))
+
 ## v0.12.0 (2026-06-03)
 
 ### Documentation
