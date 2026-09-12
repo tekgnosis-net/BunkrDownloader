@@ -119,6 +119,22 @@ STATUS_CHECK_ON_FAILURE = (
     os.getenv("STATUS_CHECK_ON_FAILURE", "true").lower() == "true"
 )
 STATUS_CACHE_TTL_SECONDS = int(os.getenv("STATUS_CACHE_TTL_SECONDS", "60"))
+
+
+def _env_int_clamped(name: str, default: int, lower: int, upper: int) -> int:
+    """Read an int env var with a default, falling back on garbage and clamping."""
+    raw = os.getenv(name)
+    try:
+        value = int(raw) if raw not in (None, "") else default
+    except ValueError:
+        value = default
+    return max(lower, min(upper, value))
+
+
+# HTTP timeout for a single status-page fetch. Bunkr's status page is slow or
+# down often enough that this is on the critical path of every job start and
+# of every failure-triggered re-check.
+STATUS_PAGE_TIMEOUT_SECONDS = _env_int_clamped("STATUS_PAGE_TIMEOUT_SECONDS", 10, 1, 60)
 # Strategy: 'backoff' (retry with delays) or 'skip' (log and skip)
 MAINTENANCE_RETRY_STRATEGY = os.getenv("MAINTENANCE_RETRY_STRATEGY", "backoff")
 

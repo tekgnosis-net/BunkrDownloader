@@ -29,7 +29,7 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "${API_PORT:-8000}:${API_PORT:-8000}"
     environment:
       VPN_SERVICE_PROVIDER: surfshark
       VPN_TYPE: wireguard
@@ -47,7 +47,7 @@ services:
       # loopback-only so the LAN cannot reach it.
       HTTP_CONTROL_SERVER_ADDRESS: "127.0.0.1:8001"
       # Allow LAN clients to reach the web UI through the published port.
-      FIREWALL_INPUT_PORTS: "8000"
+      FIREWALL_INPUT_PORTS: ${API_PORT:-8000}
       TZ: ${TZ:-UTC}
     restart: unless-stopped
 
@@ -64,7 +64,8 @@ services:
     pull_policy: always
     user: "${UID:-1000}:${GID:-1000}"
     # Share gluetun's network namespace: no ports here, the UI is published
-    # on the gluetun service above.
+    # on the gluetun service above. API_PORT sets the listen port too, so the
+    # mapping, the firewall allow-list and uvicorn all agree.
     network_mode: "service:gluetun"
     depends_on:
       gluetun:
@@ -75,6 +76,7 @@ services:
       SESSION_LOG_PATH: ${SESSION_LOG_PATH:-/app/logs/session.log}
       STATUS_CHECK_ON_FAILURE: ${STATUS_CHECK_ON_FAILURE:-true}
       STATUS_CACHE_TTL_SECONDS: ${STATUS_CACHE_TTL_SECONDS:-60}
+      STATUS_PAGE_TIMEOUT_SECONDS: ${STATUS_PAGE_TIMEOUT_SECONDS:-10}
       MAINTENANCE_RETRY_STRATEGY: ${MAINTENANCE_RETRY_STRATEGY:-backoff}
     volumes:
       - ${DOWNLOADS_DIR:-./Downloads}:/app/Downloads
