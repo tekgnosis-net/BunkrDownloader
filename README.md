@@ -16,6 +16,7 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
       - [Common Operations](#common-operations)
       - [Environment Variables](#environment-variables)
     - [Local runtime](#local-runtime)
+    - [Running behind a VPN](#running-behind-a-vpn)
   - [CLI Usage](#cli-usage)
   - [Web Dashboard](#web-dashboard)
   - [Configuration](#configuration)
@@ -126,6 +127,32 @@ npm install
 npm run dev
 ```
 The Vite dev server proxies API/WebSocket traffic to `http://localhost:8000` by default. Run `npm run build` once to bake a production bundle served by FastAPI.
+
+### Running behind a VPN
+
+The README's advice to use a VPN can be baked into the stack: `docker-compose.vpn.yml` runs the app behind a [gluetun](https://github.com/qdm12/gluetun) sidecar connected to **Surfshark over WireGuard**. Every byte the downloader sends leaves through the tunnel, gluetun's firewall acts as a kill switch if the VPN drops, and the web UI stays reachable on your LAN.
+
+Use the file **on its own** (it is not an override of `docker-compose.yml`):
+
+```bash
+docker compose -f docker-compose.vpn.yml up -d
+```
+
+1. **Get WireGuard credentials from Surfshark**: in your account go to *VPN → Manual setup → Desktop or mobile → WireGuard*, choose *I don't have a keypair*, generate one and copy the **private key**. Download a config file for any location and copy its `Address` line (e.g. `10.64.222.21/16`); it is the same for every server.
+2. **Put them in `.env`** as `WIREGUARD_PRIVATE_KEY` and `WIREGUARD_ADDRESSES`. Optionally set `VPN_SERVER_COUNTRIES` (default `Netherlands`) and `TZ`.
+3. **Start** with the command above, then confirm the tunnel: `docker exec bunkr wget -qO- https://api.ipify.org` should print a Surfshark address, and `http://<host>:${API_PORT}` should serve the dashboard.
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `WIREGUARD_PRIVATE_KEY` | Surfshark WireGuard private key (required). | *(unset)* |
+| `WIREGUARD_ADDRESSES` | The `Address` from a Surfshark WireGuard config (required). | *(unset)* |
+| `VPN_SERVER_COUNTRIES` | Exit country, passed to gluetun `SERVER_COUNTRIES`. | `Netherlands` |
+| `WIREGUARD_IMPLEMENTATION` | `auto`, `kernelspace` or `userspace`. `auto` falls back to userspace where the kernel has no WireGuard module. | `auto` |
+| `WIREGUARD_GSO` | Set to `off` if gluetun logs `write /dev/net/tun: invalid argument` (some NAS kernels). | `on` |
+
+**Synology DSM 7 (Container Manager)**: create a *Project*, paste `docker-compose.vpn.yml` as the compose file and add the `.env` next to it. Set `UID`/`GID` to your DSM user (see `id <user>` over SSH) and point `DOWNLOADS_DIR`/`LOGS_DIR` at shared-folder paths such as `/volume1/Bunkr-Downloads`. The DSM kernel has no WireGuard module, so gluetun uses its userspace implementation automatically. If gluetun fails with `/dev/net/tun` missing, load the module once over SSH with `sudo insmod /lib/modules/tun.ko` and start the project again.
+
+The `bunkr` service in `docker-compose.vpn.yml` mirrors the one in `docker-compose.yml`; when the base file changes, update both. Because both containers share one network namespace, gluetun's control server is moved from its default `:8000` to `127.0.0.1:8001` so it does not collide with the app; if you edit the file by hand, keep that line.
 
 ## CLI Usage
 ```bash
