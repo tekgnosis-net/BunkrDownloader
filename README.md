@@ -42,6 +42,20 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 ## Latest Release Updates
 
+**v0.13.2** — September 2026
+
+- **Maintenance pages recognised**: Bunkr answers HTTP 200 with a *"Download unavailable … server under maintenance"* page for files whose host is down. Those items are now logged to `session.log` as `[MAINTENANCE]` entries for later retry, raise the structured maintenance event in the web UI, and follow the `backoff`/`skip` strategy (re-fetching the item page after each delay) instead of vanishing as a generic "could not resolve" failure. Works even when `status.bunkr.ru` itself is down.
+- **`MAINTENANCE_BACKOFF_DELAYS_SECONDS`**: the 2/5/10-minute maintenance retry waits are now an env knob (default `120,300,600`, each clamped 1–3600), shared by the CDN-failure and item-page paths.
+
+**v0.13.1** — September 2026
+
+- **Quieter status-page failures**: a slow or down `status.bunkr.ru` now logs one warning line instead of a full traceback per attempt; the fetch timeout is the new `STATUS_PAGE_TIMEOUT_SECONDS` knob (default `10`, clamped 1–60).
+- **`API_PORT` is the real listen port**: the container now starts uvicorn on `API_PORT` (default `8000`) instead of a hard-coded 8000, and both compose files map `API_PORT:API_PORT`. Needed for running the app inside a VPN sidecar's network namespace, where the port must not collide with the sidecar's own services.
+
+**v0.13.0** — September 2026
+
+- **Run behind a VPN**: new `docker-compose.vpn.yml` runs the app through a [gluetun](https://github.com/qdm12/gluetun) sidecar on Surfshark WireGuard with a kill switch, keeping the dashboard reachable on the LAN. Includes Synology DSM 7 Container Manager notes. See [Running behind a VPN](#running-behind-a-vpn).
+
 **v0.12.0** — June 2026
 
 - **Update notifications in the web UI**: the dashboard now checks GitHub for newer releases and shows an "↑ update available: vX.Y.Z" badge directly under the version when your running build is out of date, linking straight to the Releases page.
