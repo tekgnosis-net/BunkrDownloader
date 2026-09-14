@@ -33,7 +33,7 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 - **Liquid-glass UI** 🆕: macOS Sonoma / iOS 17 aesthetic with `backdrop-filter` vibrancy, OKLCH-based color tokens, an Auto / Light / Dark appearance menu that follows your OS, and WCAG-AA contrast in both modes.
 - **Realtime feedback**: Rich terminal UI and a websocket + polling hybrid on the web keep progress/logs alive, even after restarts.
 - **Concurrent + reliable** 🆕: Per-job network context isolates parallel downloads; monotonic event IDs with a WS ↔ polling mutex prevent duplicate or missed progress updates across reconnects; progress bars converge to 100% (no more 99% stalls); sandboxed download root, bounded in-memory event log, optional bearer-token auth, and TTL-scoped job reaper keep long-running containers safe.
-- **Maintenance detection** 🆕: Real-time status page checks detect server maintenance and apply intelligent retry strategies with longer delays or skip affected files.
+- **Maintenance detection** 🆕: Real-time status page checks detect server maintenance and apply intelligent retry strategies with longer delays or skip affected files. Item pages that say *"Download unavailable … maintenance"* are recognised too, so affected files are logged to `session.log` for retry even when the status page itself is down.
 - **Smart filtering**: Include/ignore rules, disk-space guard, filename sanitisation, and album pagination handled automatically.
 - **Configurable storage**: Point downloads to any folder (CLI `--custom-path` or web directory picker) with existing files skipped safely.
 - **Container friendly**: Multi-stage Docker image, docker-compose stack, and CI pipeline for publishing multi-arch images to GHCR.
@@ -105,6 +105,7 @@ You can configure the deployment by setting the following environment variables 
 | `STATUS_CACHE_TTL_SECONDS` 🆕 | Cache duration for status page results in seconds. | `60` |
 | `STATUS_PAGE_TIMEOUT_SECONDS` 🆕 | Seconds to wait for the Bunkr status page on job start and failure re-checks (clamped 1–60). A failed fetch is logged as a single warning and the job continues without host data. | `10` |
 | `MAINTENANCE_RETRY_STRATEGY` 🆕 | Strategy for maintenance: `backoff` (retry with delays) or `skip` (log and skip). | `backoff` |
+| `MAINTENANCE_BACKOFF_DELAYS_SECONDS` 🆕 | Comma-separated waits between maintenance retries, one per retry, each clamped 1–3600. | `120,300,600` |
 | `ALLOWED_DOWNLOAD_ROOT` 🆕 | Filesystem root that incoming `custom_path` and `/api/directories?basePath` values must resolve under. Rejects any path that escapes this root with HTTP 422. Set to `/` to disable sandboxing (not recommended for public-facing deployments). | `<cwd>/Downloads` |
 | `API_ACCESS_TOKEN` 🆕 | Shared bearer token. When set, every `/api/*` request must carry `Authorization: Bearer <token>` and every `/ws/*` connection must include `?token=<token>`. When unset, the API is unauthenticated and a warning is logged on startup — safe only on a trusted LAN. | *(unset)* |
 | `ALLOWED_ORIGINS` 🆕 | Comma-separated list of CORS-allowed origins (e.g. `https://dash.example.com,https://admin.example.com`). Takes precedence over `ALLOWED_ORIGIN_REGEX` when set. | *(unset)* |

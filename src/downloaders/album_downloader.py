@@ -9,8 +9,17 @@ from asyncio import Semaphore
 from collections import defaultdict
 
 from src.bunkr_utils import get_subdomain, refresh_server_status
-from src.config import MAX_WORKERS, AlbumInfo, DownloadInfo, SessionInfo, STATUS_CHECK_ON_FAILURE
+from src.config import (
+    MAINTENANCE_BACKOFF_DELAYS_SECONDS,
+    MAX_WORKERS,
+    STATUS_CHECK_ON_FAILURE,
+    AlbumInfo,
+    DownloadInfo,
+    SessionInfo,
+)
+from src.crawlers.api_utils import detect_item_page_maintenance
 from src.crawlers.crawler_utils import get_download_info
+from src.file_utils import log_maintenance_event
 from src.general_utils import fetch_page
 from src.managers.live_manager import LiveManager
 
@@ -56,27 +65,27 @@ class AlbumDownloader:
                 item_page, item_soup, network=network,
             )
 
+            maintenance_reported = False
+            if not item_download_link:
+                maintenance = detect_item_page_maintenance(item_soup)
+                if maintenance:
+                    maintenance_reported = True
+                    item_download_link, item_filename = await self._wait_out_item_maintenance(
+                        item_page, item_filename, maintenance,
+                    )
+
             # Download item
             if item_download_link:
-                media_downloader = MediaDownloader(
-                    session_info=self.session_info,
-                    download_info=DownloadInfo(
-                        download_link=item_download_link,
-                        filename=item_filename,
-                        task=task,
-                        item_page=item_page,
-                    ),
-                    live_manager=self.live_manager,
-                )
-
-                failed_download = await asyncio.to_thread(media_downloader.download)
-                if failed_download:
-                    self.failed_downloads.append(failed_download)
+                await self._download_item(item_download_link, item_filename, task, item_page)
+            elif maintenance_reported:
+                # Already logged as a maintenance skip; just release the task row.
+                self.live_manager.update_task(task, completed=100, visible=False)
             else:
-                # API failure left us without a CDN URL. Mark the task
-                # finished+hidden so the overall progress counter can advance
-                # and the UI doesn't show a phantom in-flight row — otherwise
-                # the whole album's overall bar would never reach completion.
+                # No CDN URL (API failure, layout change, or maintenance that
+                # outlasted the backoff). Mark the task finished+hidden so the
+                # overall progress counter can advance and the UI doesn't show
+                # a phantom in-flight row — otherwise the whole album's overall
+                # bar would never reach completion.
                 self.live_manager.update_log(
                     event="Download link unresolved",
                     details=(
@@ -85,6 +94,77 @@ class AlbumDownloader:
                     ),
                 )
                 self.live_manager.update_task(task, completed=100, visible=False)
+
+    async def _download_item(
+        self, download_link: str, filename: str, task: int, item_page: str,
+    ) -> None:
+        """Run a MediaDownloader for one resolved item in a worker thread."""
+        media_downloader = MediaDownloader(
+            session_info=self.session_info,
+            download_info=DownloadInfo(
+                download_link=download_link,
+                filename=filename,
+                task=task,
+                item_page=item_page,
+            ),
+            live_manager=self.live_manager,
+        )
+
+        failed_download = await asyncio.to_thread(media_downloader.download)
+        if failed_download:
+            self.failed_downloads.append(failed_download)
+
+    async def _wait_out_item_maintenance(
+        self, item_page: str, filename: str | None, notice: str,
+    ) -> tuple[str | None, str | None]:
+        """Apply the maintenance strategy to an item whose page says "unavailable".
+
+        Records the item in ``session.log`` (``[MAINTENANCE]`` line, so it can
+        be retried later), emits the structured maintenance event, then either
+        skips immediately (strategy ``skip``) or re-fetches the item page after
+        each configured delay (strategy ``backoff``). Returns the resolved
+        ``(link, filename)`` on recovery, or ``(None, filename)`` when the
+        maintenance outlasted the retries.
+        """
+        label = filename or item_page
+        log_maintenance_event("Unknown", "Maintenance", item_page)
+        self.live_manager.update_maintenance(
+            subdomain="Unknown",
+            status="Maintenance",
+            affected_files_count=1,
+            event="Maintenance detected",
+            details=f"Item page for {label} says: {notice}",
+        )
+
+        strategy = getattr(
+            self.session_info.args, "maintenance_strategy", "backoff",
+        ) if self.session_info.args else "backoff"
+
+        if strategy != "skip":
+            network = self.session_info.network
+            total = len(MAINTENANCE_BACKOFF_DELAYS_SECONDS)
+            for attempt, delay in enumerate(MAINTENANCE_BACKOFF_DELAYS_SECONDS, start=1):
+                self.live_manager.update_log(
+                    event="Waiting for maintenance",
+                    details=f"Retrying {label} in {delay}s ({attempt}/{total})...",
+                )
+                await asyncio.sleep(delay)
+                item_soup = await fetch_page(item_page, network=network)
+                if item_soup is None:
+                    continue
+                link, fresh_filename = await get_download_info(
+                    item_page, item_soup, network=network,
+                )
+                if link:
+                    return link, fresh_filename or filename
+                if detect_item_page_maintenance(item_soup) is None:
+                    break  # no longer maintenance but still unresolvable: give up
+
+        self.live_manager.update_log(
+            event="Maintenance skip",
+            details=f"Skipping {label}: server still under maintenance (strategy: {strategy}).",
+        )
+        return None, filename
 
     async def download_album(self, max_workers: int = MAX_WORKERS) -> None:
         """Handle the album download."""
