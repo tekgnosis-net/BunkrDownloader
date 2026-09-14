@@ -9,7 +9,13 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from .config import HEADERS, NetworkContext, STATUS_CACHE_TTL_SECONDS, STATUS_PAGE
+from .config import (
+    HEADERS,
+    NetworkContext,
+    STATUS_CACHE_TTL_SECONDS,
+    STATUS_PAGE,
+    STATUS_PAGE_TIMEOUT_SECONDS,
+)
 
 # Module-level cache for status page results, keyed on the status_page URL so
 # jobs with differing network overrides maintain isolated caches.
@@ -21,11 +27,19 @@ def fetch_page(url: str, *, network: NetworkContext | None = None) -> BeautifulS
     """Fetch the HTML content of a page at the given URL."""
     headers = network.headers if network else HEADERS
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=STATUS_PAGE_TIMEOUT_SECONDS)
         response.raise_for_status()
 
-    except requests.RequestException:
-        logging.exception("An error occurred while fetching the status page.")
+    except requests.RequestException as exc:
+        # One line at WARNING; the stack trace is noise for an expected,
+        # non-fatal condition (the status page is frequently slow or down).
+        logging.warning(
+            "Status page fetch failed for %s: %s: %s",
+            url,
+            type(exc).__name__,
+            exc,
+        )
+        logging.debug("Status page fetch traceback", exc_info=True)
         return None
 
     return BeautifulSoup(response.text, "html.parser")

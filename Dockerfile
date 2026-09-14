@@ -37,4 +37,6 @@ RUN chown -R ${APP_UID}:${APP_GID} /app
 USER ${APP_UID}:${APP_GID}
 
 EXPOSE 8000
-CMD ["uvicorn", "src.web.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form so API_HOST / API_PORT from the environment are honoured; exec
+# keeps uvicorn as PID 1 so signals reach it.
+CMD ["sh", "-c", "exec uvicorn src.web.app:app --host \"${API_HOST:-0.0.0.0}\" --port \"${API_PORT:-8000}\""]

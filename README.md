@@ -93,8 +93,8 @@ You can configure the deployment by setting the following environment variables 
 
 | Variable | Description | Default Value |
 | :--- | :--- | :--- |
-| `API_PORT` | The host port to access the Web UI and API. | `8000` |
-| `API_HOST` | The host address the application listens on. | `0.0.0.0` |
+| `API_PORT` | Port the app listens on inside the container **and** the host port compose publishes (they are kept equal). | `8000` |
+| `API_HOST` | Address uvicorn binds to inside the container. | `0.0.0.0` |
 | `DOWNLOADS_DIR` | The local directory where files will be saved. | `./Downloads` |
 | `LOGS_DIR` | The local directory where logs will be stored. | `./logs` |
 | `SESSION_LOG_PATH`| The internal path for the session log. | `/app/logs/session.log` |
@@ -103,6 +103,7 @@ You can configure the deployment by setting the following environment variables 
 | `GID` | The group ID to run the container as. | `1000` |
 | `STATUS_CHECK_ON_FAILURE` 🆕 | Enable real-time status page checks on download failures. | `true` |
 | `STATUS_CACHE_TTL_SECONDS` 🆕 | Cache duration for status page results in seconds. | `60` |
+| `STATUS_PAGE_TIMEOUT_SECONDS` 🆕 | Seconds to wait for the Bunkr status page on job start and failure re-checks (clamped 1–60). A failed fetch is logged as a single warning and the job continues without host data. | `10` |
 | `MAINTENANCE_RETRY_STRATEGY` 🆕 | Strategy for maintenance: `backoff` (retry with delays) or `skip` (log and skip). | `backoff` |
 | `ALLOWED_DOWNLOAD_ROOT` 🆕 | Filesystem root that incoming `custom_path` and `/api/directories?basePath` values must resolve under. Rejects any path that escapes this root with HTTP 422. Set to `/` to disable sandboxing (not recommended for public-facing deployments). | `<cwd>/Downloads` |
 | `API_ACCESS_TOKEN` 🆕 | Shared bearer token. When set, every `/api/*` request must carry `Authorization: Bearer <token>` and every `/ws/*` connection must include `?token=<token>`. When unset, the API is unauthenticated and a warning is logged on startup — safe only on a trusted LAN. | *(unset)* |
