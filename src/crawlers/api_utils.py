@@ -31,6 +31,32 @@ if TYPE_CHECKING:
 CDN_URL_REGEX = re.compile(r'jsCDN\s*=\s*"([^"]+)"')
 SIGN_URL_REGEX = re.compile(r'signUrl\s*=\s*"([^"]+)"')
 
+# Text Bunkr renders on an item page (HTTP 200, no ``jsCDN``/``signUrl``) when
+# the server hosting that file is down for maintenance. Matched
+# case-insensitively against the page's visible text.
+MAINTENANCE_PAGE_MARKERS = (
+    "unavailable for maintenance",
+    "maintenance is in progress",
+)
+
+
+def detect_item_page_maintenance(soup: BeautifulSoup | None) -> str | None:
+    """Return Bunkr's maintenance notice from an item page, or ``None``.
+
+    Bunkr answers 200 for items whose hosting server is under maintenance but
+    swaps the media markers for a "Download unavailable" notice. This is a
+    second maintenance signal, independent of the status page (which can be
+    down itself), so callers can route the item through the maintenance
+    strategy instead of reporting a generic resolution failure.
+    """
+    if soup is None:
+        return None
+    for marker in MAINTENANCE_PAGE_MARKERS:
+        node = soup.find(string=re.compile(re.escape(marker), re.IGNORECASE))
+        if node is not None:
+            return " ".join(str(node).split())
+    return None
+
 
 def _unescape(value: str) -> str:
     """Undo the JSON ``\\/`` slash-escaping Bunkr emits in inline script vars."""
@@ -137,7 +163,14 @@ def get_signed_download_url(
 
     sources = extract_media_sources(soup)
     if sources is None:
-        logging.warning("Could not locate jsCDN/signUrl on item page")
+        maintenance = detect_item_page_maintenance(soup)
+        if maintenance:
+            logging.warning("Item page reports server maintenance: %s", maintenance)
+        else:
+            logging.warning(
+                "Could not locate jsCDN/signUrl on item page "
+                "(layout changed, or the item was removed)",
+            )
         return None
 
     cdn_url, sign_url = sources

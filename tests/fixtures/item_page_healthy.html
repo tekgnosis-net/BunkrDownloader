@@ -1,0 +1,93 @@
+<!doctype html><html><head><title>0hskyp3d0oh9lg8l5taeq_part2.mp4 | Bunkr</title></head><body><h1>0hskyp3d0oh9lg8l5taeq_part2.mp4</h1>
+<script type="text/javascript">
+                var videoCoverUrl = "https:\/\/static.scdn.st\/5d0c8e2a-3f7b-4a69-b1d6-9a4c7f3e0b5d\/thumbs\/5c26b2ed-fa25-431e-ac79-e0c38d0b3986.mp4_grid.png";
+                var jsCDN         = "https:\/\/c1be-b.cdn.cr\/storage\/media\/5c26b2ed-fa25-431e-ac79-e0c38d0b3986.mp4";
+                var jsType        = "video\/mp4";
+                var jsSlug        = "IXUVhmTpJ5Qsi";
+                var signUrl       = "https://glb-apisign.cdn.cr/sign";
+            </script>
+<script>
+async function getSignedUrl(rawUrl) {
+    const orig = new URL(rawUrl);
+    const path = decodeURIComponent(orig.pathname);
+    const r = await fetch(
+        signUrl + '?path=' + encodeURIComponent(path),
+        { credentials: 'omit' }
+    );
+    if (!r.ok) throw new Error('sign ' + r.status);
+    const { token, ex } = await r.json();
+    orig.searchParams.set('token', token);
+    orig.searchParams.set('ex', ex);
+    return orig.toString();
+}
+
+function buildPlayer(srcUrl, type, poster) {
+    const wrapper = document.getElementById('video-wrapper');
+    const video   = document.createElement('video');
+    video.id      = 'player';
+    video.controls = true;
+    video.preload  = 'none';
+    video.setAttribute('class', '--plyr-color-main: #a78bfa;');
+    if (poster) video.setAttribute('data-poster', poster);
+
+    const source = document.createElement('source');
+    source.src  = srcUrl;
+    source.type = type || 'video/mp4';
+    video.appendChild(source);
+    wrapper.appendChild(video);
+
+    document.getElementById('loading-background').style.display = 'none';
+    wrapper.style.display = 'block';
+
+    const player = new Plyr(video, {
+        debug: false,
+        tooltips: { controls: true },
+        controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'settings', 'pip', 'airplay', 'fullscreen'],
+        autoplay: false,
+        ratio: '16:9'
+    });
+
+    if (window.Heatmap && jsSlug) {
+        window.Heatmap.track(player, jsSlug);
+        window.Heatmap.attach(player, jsSlug);
+    }
+
+    return player;
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+    const fileTracker = document.getElementById('fileTracker');
+    if (fileTracker) {
+        const fileId = fileTracker.getAttribute('data-file-id');
+        if (fileId) {
+            fetch(`https://s.bunkr.ru/api/file/stats/${fileId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            })
+                .then(response => response.json())
+                .catch(error => console.error('Error (POST):', error));
+
+            fetch(`https://s.bunkr.ru/api/file/stats/${fileId}`)
+                .then(response => response.json())
+                .then(data => {
+                    const countDisplay = document.getElementById('downloadCount');
+                    if (countDisplay && data.downloadCount !== undefined) {
+                        countDisplay.textContent = `${data.downloadCount} views`;
+                        countDisplay.style.display = 'inline';
+                    }
+                })
+                .catch(error => console.error('Error fetching download count:', error));
+        }
+    }
+
+    try {
+        const signedUrl = await getSignedUrl(jsCDN);
+        buildPlayer(signedUrl, jsType, videoCoverUrl);
+    } catch (err) {
+        console.error('player init failed:', err);
+        document.getElementById('loading-background').innerHTML =
+            '<p style="font-size:20px;color:red;">Failed to load player.</p>';
+    }
+});
+</script>
+</body></html>

@@ -138,6 +138,27 @@ STATUS_PAGE_TIMEOUT_SECONDS = _env_int_clamped("STATUS_PAGE_TIMEOUT_SECONDS", 10
 # Strategy: 'backoff' (retry with delays) or 'skip' (log and skip)
 MAINTENANCE_RETRY_STRATEGY = os.getenv("MAINTENANCE_RETRY_STRATEGY", "backoff")
 
+
+def _env_int_list_clamped(
+    name: str, default: tuple[int, ...], lower: int, upper: int,
+) -> tuple[int, ...]:
+    """Read a comma-separated int list env var; fall back on garbage, clamp each."""
+    raw = os.getenv(name, "")
+    try:
+        values = tuple(int(part) for part in raw.split(",") if part.strip())
+    except ValueError:
+        return default
+    if not values:
+        return default
+    return tuple(max(lower, min(upper, value)) for value in values)
+
+
+# Waits between retries while a server is under maintenance (seconds, one
+# entry per retry; the last entry repeats if there are more retries).
+MAINTENANCE_BACKOFF_DELAYS_SECONDS = _env_int_list_clamped(
+    "MAINTENANCE_BACKOFF_DELAYS_SECONDS", (120, 300, 600), 1, 3600,
+)
+
 # Web job memory bounds (PR2)
 JOB_EVENT_RETENTION = int(os.getenv("JOB_EVENT_RETENTION", "2000"))
 JOB_TTL_HOURS = int(os.getenv("JOB_TTL_HOURS", "24"))

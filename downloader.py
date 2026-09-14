@@ -30,7 +30,12 @@ from src.crawlers.crawler_utils import (
     get_download_info,
 )
 from src.downloaders.album_downloader import AlbumDownloader, MediaDownloader
-from src.file_utils import create_download_directory, format_directory_name
+from src.crawlers.api_utils import detect_item_page_maintenance
+from src.file_utils import (
+    create_download_directory,
+    format_directory_name,
+    log_maintenance_event,
+)
 from src.general_utils import (
     check_disk_space,
     check_python_version,
@@ -94,6 +99,19 @@ async def handle_download_process(
             url, initial_soup, network=session_info.network,
         )
         if not download_link:
+            maintenance = detect_item_page_maintenance(initial_soup)
+            if maintenance:
+                # The file's server is under maintenance: record it for a
+                # later retry and say so, instead of a generic failure.
+                log_maintenance_event("Unknown", "Maintenance", url)
+                live_manager.update_maintenance(
+                    subdomain="Unknown",
+                    status="Maintenance",
+                    affected_files_count=1,
+                    event="Maintenance detected",
+                    details=f"Item page for {filename or url} says: {maintenance}",
+                )
+                return
             # Bunkr API failed (network error, non-200 response) — mirror the
             # album-path behaviour of skipping rather than passing None into
             # requests.get and blowing up with a cryptic TypeError.

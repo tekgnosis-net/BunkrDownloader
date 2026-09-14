@@ -26,6 +26,7 @@ from src.config import (
     HTTPStatus,
     SessionInfo,
     STATUS_CHECK_ON_FAILURE,
+    MAINTENANCE_BACKOFF_DELAYS_SECONDS,
 )
 from src.file_utils import (
     log_maintenance_event,
@@ -195,9 +196,9 @@ class MediaDownloader:
 
         if attempt < self.retries - 1:
             if maintenance_delay:
-                # Longer delays for maintenance: 2min, 5min, 10min
-                delay_minutes = [2, 5, 10]
-                delay = delay_minutes[min(attempt, len(delay_minutes) - 1)] * 60
+                # Longer delays for maintenance (env knob; default 2/5/10 min)
+                delays = MAINTENANCE_BACKOFF_DELAYS_SECONDS
+                delay = delays[min(attempt, len(delays) - 1)]
                 delay += random.uniform(1, 10)  # noqa: S311
             else:
                 # Standard exponential backoff
