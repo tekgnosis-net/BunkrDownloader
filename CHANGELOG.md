@@ -1,5 +1,33 @@
 # CHANGELOG
 
+## v0.13.2 (2026-09-14)
+
+### Fix
+
+* fix(crawler): recognise &#34;Download unavailable&#34; maintenance item pages (#23)
+
+Bunkr answers 200 for items whose hosting server is under maintenance but
+replaces the jsCDN/signUrl markers with a &#34;Download unavailable ... server
+under maintenance&#34; notice. The crawler treated that as a generic
+resolution failure: one vague warning per file, no [MAINTENANCE] entry in
+session.log, no structured maintenance event, and the maintenance retry
+strategy never engaged. With status.bunkr.ru itself down (523) the app was
+blind to the outage.
+
+- api_utils.detect_item_page_maintenance reads the notice from the page;
+  get_signed_download_url now says whether the markers were missing or
+  the page reports maintenance.
+- Album path: on a maintenance page, log the item to session.log, emit
+  update_maintenance, then skip (strategy=skip) or re-fetch the page after
+  each configured delay (strategy=backoff) and download if it recovers.
+- Single-file path: same logging, then return.
+- MAINTENANCE_BACKOFF_DELAYS_SECONDS env knob (default 120,300,600, each
+  clamped 1-3600) replaces the hard-coded 2/5/10 min list and is shared
+  by the CDN-failure path. Forwarded in both compose files, documented.
+- Fixtures captured from live pages (token-free); 12 new tests.
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`7ad4998`](https://github.com/tekgnosis-net/BunkrDownloader/commit/7ad4998e098cb15d3b01c06e72f406d1f81d1e35))
+
 ## v0.13.1 (2026-09-14)
 
 ### Fix
