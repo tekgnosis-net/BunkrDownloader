@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## v0.13.1 (2026-09-14)
+
+### Fix
+
+* fix: quiet status-page failures and make API_PORT the real listen port (#22)
+
+Status page: a failed fetch of Bunkr&#39;s status page logged a ~70-line
+traceback per attempt for what is an expected, non-fatal condition (the
+page is often slow or down). It now logs one WARNING line naming the URL
+and error, keeps the traceback at DEBUG, and the fetch timeout is a new
+env knob STATUS_PAGE_TIMEOUT_SECONDS (default 10, clamped 1-60) instead
+of a literal.
+
+API_PORT: the variable was passed into the container but the image CMD
+hard-coded uvicorn on port 8000, so it only ever changed the host-side
+mapping. The CMD now honours API_HOST/API_PORT (exec&#39;d so uvicorn stays
+PID 1), both compose files map API_PORT:API_PORT, and the VPN variant&#39;s
+FIREWALL_INPUT_PORTS follows it. Needed so the app can pick a free port
+when sharing a sidecar&#39;s network namespace.
+
+Docs: README variable table, .env.sample.
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`8350903`](https://github.com/tekgnosis-net/BunkrDownloader/commit/8350903a7716cfa9d79e10449d65d4d42ad58cc2))
+
 ## v0.13.0 (2026-09-12)
 
 ### Documentation
