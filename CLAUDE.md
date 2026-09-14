@@ -84,6 +84,8 @@ Every downloader-chain function accepts an optional `network=` kwarg: `fetch_pag
 - `src/bunkr_utils.py` — scrapes the public status page and owns the module-level `_status_cache`. Cache is keyed on `network.status_page` so concurrent jobs with distinct overrides maintain isolated caches. Failed downloads group by subdomain and re-check status via `refresh_server_status(subdomain, bunkr_status, network=…)` before final retries. Prefer `get_bunkr_status_cached(network)` in new code.
 
 ### Structured maintenance events
+Two signals feed maintenance handling: the status page (`bunkr_utils`) and the item page itself (`api_utils.detect_item_page_maintenance`, matching Bunkr's "Download unavailable ... maintenance" notice on an HTTP 200 page). Both route through `update_maintenance` + `file_utils.log_maintenance_event`, and both use the `MAINTENANCE_BACKOFF_DELAYS_SECONDS` knob for `backoff` waits. Fixtures for the item-page shapes live in `tests/fixtures/`.
+
 When surfacing a maintenance condition, call `live_manager.update_maintenance(subdomain=, status=, affected_files_count=, event=, details=)`. On the web side this emits both a `log` envelope *and* a structured `maintenance_detected` envelope with real fields; the CLI collapses to `update_log`. **Don't** use `update_log(event="Maintenance detected", …)` — the old regex-parser that recovered the subdomain from the formatted log string is gone.
 
 ### Event envelope contract (web layer)
