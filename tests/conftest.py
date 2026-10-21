@@ -85,3 +85,15 @@ def fake_live_manager() -> FakeLiveManager:
     """Expose a FakeLiveManager to tests that exercise the downloader helpers."""
 
     return FakeLiveManager()
+
+
+@pytest.fixture
+def range_server():
+    """Local HTTP server with Range support and fault injection (see tests/helpers)."""
+    from tests.helpers.range_server import RangeServer  # pylint: disable=import-outside-toplevel
+
+    server = RangeServer()
+    try:
+        yield server
+    finally:
+        server.close()
