@@ -73,6 +73,12 @@ def test_resolve_transfer_settings_per_job_wins_and_is_clamped():
     assert settings.partial_max_age_hours == 168              # None -> env/default
 
 
+def test_per_job_max_connections_cannot_exceed_env_ceiling():
+    from src.config import resolve_transfer_settings  # pylint: disable=import-outside-toplevel
+    assert resolve_transfer_settings(Namespace(max_connections=64)).max_connections == 12
+    assert resolve_transfer_settings(Namespace(max_connections=4)).max_connections == 4
+
+
 def test_cli_flags_registered_with_env_defaults():
     from src.config import add_common_arguments  # pylint: disable=import-outside-toplevel
     parser = ArgumentParser()

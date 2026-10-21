@@ -121,10 +121,6 @@ class DownloadRequest(BaseModel):
         default=None, ge=1, le=64,
         description="Process-wide cap on simultaneous download connections.",
     )
-    partial_max_age_hours: int | None = Field(
-        default=None, ge=0, le=8760,
-        description="Delete abandoned partials older than this; 0 disables.",
-    )
     network: NetworkOverrides | None = Field(
         default=None,
         description="Optional network configuration overrides applied before the job runs.",
@@ -672,7 +668,6 @@ def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
         segments=request.segments,
         segment_min_size_mb=request.segment_min_size_mb,
         max_connections=request.max_connections,
-        partial_max_age_hours=request.partial_max_age_hours,
         status_page=request.network.status_page if request.network else None,
         bunkr_api=request.network.api_endpoint if request.network else None,
         download_referer=request.network.download_referer if request.network else None,

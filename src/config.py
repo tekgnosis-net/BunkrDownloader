@@ -214,12 +214,18 @@ def resolve_transfer_settings(args: Namespace | None) -> TransferSettings:
 
     Env-derived module constants are the defaults; any attribute present and
     non-``None`` on ``args`` (CLI flag or web request field) overrides it and
-    is clamped to the same bounds.
+    is clamped to the same bounds. Exception: ``max_connections`` is a
+    process-wide ceiling, so a per-job value can only lower it; the effective
+    value is ``min(clamped request value, MAX_CONCURRENT_CONNECTIONS)``.
     """
+    max_connections = min(
+        _clamped_arg(args, "max_connections", MAX_CONCURRENT_CONNECTIONS),
+        MAX_CONCURRENT_CONNECTIONS,
+    )
     return TransferSettings(
         segments=_clamped_arg(args, "segments", DOWNLOAD_SEGMENTS),
         segment_min_bytes=_clamped_arg(args, "segment_min_size_mb", SEGMENT_MIN_FILE_SIZE_MB) * MB,
-        max_connections=_clamped_arg(args, "max_connections", MAX_CONCURRENT_CONNECTIONS),
+        max_connections=max_connections,
         partial_max_age_hours=_clamped_arg(args, "partial_max_age_hours", PARTIAL_MAX_AGE_HOURS),
     )
 
