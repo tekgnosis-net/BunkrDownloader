@@ -139,7 +139,7 @@ React 18 + TypeScript + Chakra UI 2 + Zustand, built by Vite 7. Entry `src/main.
 - Follow the **branch → PR → review → resolve → merge** loop for every commit set. Each PR is rebased on `main` before pushing so the reviewer sees a clean diff.
 - Design docs for non-trivial features live in `docs/superpowers/specs/<date>-<slug>-design.md`.
 - **Never stage local tooling artifacts:** `.remember/`, `.superpowers/`, `.playwright-mcp/`, `supertool`, `pr3-*.png` screenshots. Use `git add -u` + explicit paths rather than `git add .`.
-- Partial downloads are **resumable across runs**: never delete `*.temp.parts` in code paths other than `transfer_manifest.discard_partial` / `cleanup_stale_partials`.
+- Partial downloads are **resumable across runs**: never delete `*.temp.parts` in code paths other than `transfer_manifest.discard_partial` / `segmented_download.cleanup_stale_partials`.
 - `.gitignore` carries Python-artifact globs `lib/` and `logs/` that match *any* directory of that name, so `frontend/src/lib/` and `frontend/src/components/logs/` are rescued with `!` negations at the bottom. A new frontend directory named `lib`, `logs`, `build`, `dist`, `downloads`, etc. needs the same negation or it silently won't be tracked.
 - `session.log` at `SESSION_LOG_PATH` persists failed URLs for manual retry; maintenance events are logged as `[MAINTENANCE] timestamp | subdomain | status | url`.
 - Downloads default to `./Downloads/<album_name>-<album_id>/`; `--custom-path /foo` produces `/foo/Downloads/...` (the `Downloads` subfolder is appended by `create_download_directory`).
