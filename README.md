@@ -42,6 +42,10 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 ## Latest Release Updates
 
+**v0.13.3** — October 2026
+
+- **Dependency maintenance**: cleared all 21 open frontend Dependabot alerts. axios 1.16.1 → 1.20.0 (the only flagged package shipped in the browser bundle) plus patched build-toolchain versions of vite, esbuild, postcss, @babel/core, browserslist, source-map-js, baseline-browser-mapping, form-data and follow-redirects. `npm audit` reports zero vulnerabilities; no behaviour changes.
+
 **v0.13.2** — September 2026
 
 - **Maintenance pages recognised**: Bunkr answers HTTP 200 with a *"Download unavailable … server under maintenance"* page for files whose host is down. Those items are now logged to `session.log` as `[MAINTENANCE]` entries for later retry, raise the structured maintenance event in the web UI, and follow the `backoff`/`skip` strategy (re-fetching the item page after each delay) instead of vanishing as a generic "could not resolve" failure. Works even when `status.bunkr.ru` itself is down.
