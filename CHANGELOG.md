@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## v0.15.0 (2026-10-21)
+
+### Feature
+
+* feat(download): segmented, resumable transfers with per-job knobs (#29)
+
+Segmented range downloads with an on-disk manifest that resumes across runs and restarts, per-job TransferContext (connection cap, cancel event), signed-URL refresh and manifest-reset self-heal with caps, stale-partial sweep, and six transfer knobs available as env, CLI flags and per-job web settings. Docs, compose files and CLAUDE.md updated. ([`4a3262e`](https://github.com/tekgnosis-net/BunkrDownloader/commit/4a3262ebf4ce35c5391858209fc1242e46ab5650))
+
 ## v0.14.0 (2026-10-21)
 
 ### Documentation
