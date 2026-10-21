@@ -234,10 +234,10 @@ python3 main.py [shared flags]
 ## Architecture
 - `downloader.py` / `main.py` call `validate_and_download`, which builds a `SessionInfo` and streams progress via `LiveManager`.
 - `src/web/app.py` wraps the same flow: `JobEventBroker` buffers events, `WebLiveManager` mirrors CLI progress/log calls, and FastAPI exposes REST + WebSocket endpoints.
-- `src/crawlers/*` resolve album pagination, decrypt media URLs, and normalise filenames.
+- `src/crawlers/*` resolve album pagination, read the item page's `jsCDN`/`signUrl` pair and fetch the short-lived signed CDN URL (`api_utils.get_signed_download_url`, HTTPS-only signing hosts), and normalise filenames.
 - `src/downloaders/*` handle concurrency, retries, and chunked writes through `download_utils.save_file_with_progress`, with large files split into parallel range workers (`SegmentedDownloader`), `.temp.parts` manifest-backed resume across retries and runs, and a per-job `TransferContext` (connection governor capping simultaneous GETs + cancel flag); subdomain outages are tracked with `bunkr_utils`.
 - 🆕 **Maintenance detection**: `bunkr_utils.refresh_server_status` checks Bunkr's status page on download failures with TTL-based caching. Failed downloads are grouped by subdomain and rechecked before final retries.
-- `frontend/src/App.jsx` consumes `/api/downloads`, `/api/directories`, `/ws/jobs/{id}`, and the `/api/downloads/{id}/events` polling fallback for seamless updates. 🆕 Maintenance events trigger toast notifications.
+- `frontend/src/App.tsx` (React 18 + TypeScript, Zustand store in `lib/store.ts`) consumes `/api/downloads`, `/api/directories` and `/api/settings/defaults`; `lib/connection.ts` runs the `/ws/jobs/{id}` stream with the `/api/downloads/{id}/events` polling fallback and re-attaches to a running job on load. 🆕 Maintenance events trigger toast notifications.
 
 ## Development
 - Python ≥ 3.10, Node ≥ 18 recommended.
