@@ -69,6 +69,10 @@ def test_load_rejects_missing_malformed_and_wrong_version(tmp_path: Path):
     assert load_manifest(path) is None
     path.write_text(json.dumps({"version": 1, "size": 1}))       # missing segments
     assert load_manifest(path) is None
+    path.write_text("[]")                                         # valid JSON, not an object
+    assert load_manifest(path) is None
+    path.write_text('"x"')
+    assert load_manifest(path) is None
 
 
 def test_manifest_mismatch_on_size():

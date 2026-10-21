@@ -139,7 +139,7 @@ def load_manifest(path: Path) -> TransferManifest | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return TransferManifest.from_dict(data)
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
 
