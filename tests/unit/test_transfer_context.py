@@ -226,7 +226,7 @@ def test_cancel_mid_single_stream_stops_and_keeps_resumable_partial(
 
 
 def test_cancel_returns_promptly(range_server, tmp_path, fake_live_manager):
-    range_server.chunk_delay = 0.01
+    range_server.chunk_delay = 0.05        # a full transfer takes seconds; cancel must not
     dl = _dl(fake_live_manager, tmp_path, range_server.url)
     timer = threading.Timer(0.15, dl._ctx.cancel_event.set)
     start = time.monotonic()
@@ -235,7 +235,7 @@ def test_cancel_returns_promptly(range_server, tmp_path, fake_live_manager):
     elapsed = time.monotonic() - start
     timer.join()
     assert outcome is DownloadOutcome.RETRYABLE_FAILURE
-    assert elapsed < 0.15 + 1.0             # a full transfer needs ~0.4 s+ per segment
+    assert elapsed < 0.15 + 1.0             # a full transfer needs ~2 s+ per segment
     saved = load_manifest(manifest_path(temp_path_for(tmp_path / "file.bin")))
     assert saved is not None and 0 < saved.bytes_done < len(range_server.data)
 
