@@ -19,7 +19,7 @@ from pathlib import Path
 import requests
 from requests.exceptions import ChunkedEncodingError, RequestException
 
-from src.config import HTTPStatus, TransferSettings
+from src.config import TRANSFER_TIMEOUT_SECONDS, HTTPStatus, TransferSettings
 from src.managers.progress_manager import ProgressManager
 
 from .connection_governor import Cancelled, ConnectionGovernor
@@ -150,7 +150,7 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         task: int,
         governor: ConnectionGovernor | None = None,
         cancel_event: threading.Event | None = None,
-        timeout: float = 30.0,
+        timeout: float | None = None,
         flush_bytes: int = MANIFEST_FLUSH_BYTES,
     ) -> None:
         self.url = url
@@ -161,7 +161,7 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         self.task = task
         self.governor = governor or ConnectionGovernor(len(manifest.segments))
         self.cancel_event = cancel_event or threading.Event()
-        self.timeout = timeout
+        self.timeout = TRANSFER_TIMEOUT_SECONDS if timeout is None else timeout
         self.flush_bytes = flush_bytes
         self._lock = threading.Lock()
         self._total = manifest.bytes_done

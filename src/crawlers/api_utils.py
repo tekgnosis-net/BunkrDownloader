@@ -20,7 +20,13 @@ from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 import requests
 
-from src.config import HEADERS, HTTPStatus, NetworkContext, SIGN_URL_ALLOWED_HOSTS
+from src.config import (
+    HEADERS,
+    ITEM_PAGE_TIMEOUT_SECONDS,
+    SIGN_URL_ALLOWED_HOSTS,
+    HTTPStatus,
+    NetworkContext,
+)
 
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup
@@ -129,7 +135,7 @@ def _request_sign_token(
             session.headers.update(headers)
             # Bounded: this now runs inside download workers (link refresh),
             # where a hung signing endpoint would pin a thread forever.
-            response = session.get(request_url, timeout=20)
+            response = session.get(request_url, timeout=ITEM_PAGE_TIMEOUT_SECONDS)
 
         if response.status_code != HTTPStatus.OK:
             logging.warning(

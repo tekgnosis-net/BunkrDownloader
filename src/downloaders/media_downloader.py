@@ -25,12 +25,14 @@ from src.bunkr_utils import (
 )
 from src.config import (
     DOWNLOAD_HEADERS,
+    ITEM_PAGE_TIMEOUT_SECONDS,
+    MAINTENANCE_BACKOFF_DELAYS_SECONDS,
+    STATUS_CHECK_ON_FAILURE,
+    TRANSFER_TIMEOUT_SECONDS,
     DownloadInfo,
     HTTPStatus,
     SessionInfo,
     TransferSettings,
-    STATUS_CHECK_ON_FAILURE,
-    MAINTENANCE_BACKOFF_DELAYS_SECONDS,
 )
 from src.crawlers.api_utils import get_signed_download_url
 from src.file_utils import (
@@ -476,7 +478,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     try:
                         response = requests.get(
                             self.download_info.download_link, stream=True,
-                            headers=request_headers, timeout=30,
+                            headers=request_headers, timeout=TRANSFER_TIMEOUT_SECONDS,
                         )
                         verdict = self._single_verdict(response, resume_from, manifest)
                     except RequestException as req_err:
@@ -531,7 +533,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         network = self.session_info.network
         page_headers = network.headers if network is not None else None
         try:
-            page = requests.get(item_page, headers=page_headers, timeout=20)
+            page = requests.get(item_page, headers=page_headers, timeout=ITEM_PAGE_TIMEOUT_SECONDS)
             page.raise_for_status()
             soup = BeautifulSoup(page.text, "html.parser")
             link = get_signed_download_url(soup, network=network)

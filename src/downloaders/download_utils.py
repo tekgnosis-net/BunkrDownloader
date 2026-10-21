@@ -15,7 +15,7 @@ import requests
 from requests import Response
 from requests.exceptions import ChunkedEncodingError, RequestException
 
-from src.config import DOWNLOAD_HEADERS, LARGE_FILE_CHUNK_SIZE, THRESHOLDS
+from src.config import DOWNLOAD_HEADERS, LARGE_FILE_CHUNK_SIZE, PROBE_TIMEOUT_SECONDS, THRESHOLDS
 from src.managers.progress_manager import ProgressManager
 
 from .transfer_manifest import (
@@ -84,7 +84,7 @@ def _extract_response_length(response: Response) -> int | None:
 def _head_content_length(
     download_url: str,
     *,
-    timeout: float = 5.0,
+    timeout: float | None = None,
     headers: dict[str, str] | None = None,
 ) -> int | None:
     """Best-effort HEAD request used to infer missing content lengths.
@@ -100,7 +100,7 @@ def _head_content_length(
         head_resp = requests.head(
             download_url,
             headers=effective_headers,
-            timeout=timeout,
+            timeout=PROBE_TIMEOUT_SECONDS if timeout is None else timeout,
             allow_redirects=True,
         )
         head_resp.raise_for_status()
