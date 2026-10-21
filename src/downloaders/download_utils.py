@@ -15,7 +15,7 @@ import requests
 from requests import Response
 from requests.exceptions import ChunkedEncodingError, RequestException
 
-from src.config import DOWNLOAD_HEADERS, LARGE_FILE_CHUNK_SIZE, THRESHOLDS
+from src.config import DOWNLOAD_HEADERS, LARGE_FILE_CHUNK_SIZE, PROBE_TIMEOUT_SECONDS, THRESHOLDS
 from src.managers.progress_manager import ProgressManager
 
 from .transfer_manifest import (
@@ -84,7 +84,7 @@ def _extract_response_length(response: Response) -> int | None:
 def _head_content_length(
     download_url: str,
     *,
-    timeout: float = 5.0,
+    timeout: float | None = None,
     headers: dict[str, str] | None = None,
 ) -> int | None:
     """Best-effort HEAD request used to infer missing content lengths.
@@ -100,7 +100,7 @@ def _head_content_length(
         head_resp = requests.head(
             download_url,
             headers=effective_headers,
-            timeout=timeout,
+            timeout=PROBE_TIMEOUT_SECONDS if timeout is None else timeout,
             allow_redirects=True,
         )
         head_resp.raise_for_status()
@@ -148,19 +148,40 @@ def _remove_quietly(path: Path | None) -> None:
         logging.debug("Could not remove %s: %s", path, err)
 
 
-def _persist_manifest(file: IO[bytes], manifest: TransferManifest, path: Path) -> None:
+def _persist_manifest(file: IO[bytes], manifest: TransferManifest, path: Path) -> bool:
     """Make every byte written so far durable, then record it in the manifest.
 
-    Best effort: an ``OSError`` is logged at debug level and the stream goes
-    on (a failed sync skips the save, so the manifest never over-claims).
+    Returns False when the data could not be synced: the caller treats that
+    as terminal, because a later successful sync would not cover the bytes
+    whose writeback was reported lost. A manifest that merely cannot be
+    *saved* costs resumability, not the download (the data is durable), so
+    that is logged and the stream goes on; the manifest on disk is then
+    older than the data, never the other way round.
     """
 
     try:
         file.flush()
         sync_data(file.fileno())
+    except OSError as err:
+        logging.warning("Could not sync %s: %s", path, err)
+        return False
+    try:
         save_manifest(manifest, path)
     except OSError as err:
         logging.debug("Could not persist manifest %s: %s", path, err)
+    return True
+
+
+def _sync_failed(
+    progress_manager: ProgressManager, task: int, download_path: str,
+) -> DownloadOutcome:
+    """Report a failed data sync: the partial is kept, the file is not retried now."""
+    _log_once(
+        progress_manager,
+        f"Cannot sync {download_path} to disk; keeping the partial for a later run.",
+    )
+    progress_manager.update_task(task, completed=0, visible=False)
+    return DownloadOutcome.TERMINAL_FAILURE
 
 
 class _ProgressEstimator:  # pylint: disable=too-few-public-methods
@@ -327,7 +348,8 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
                     if manifest is not None:
                         manifest.segments[0].done = total_downloaded
                         if since_flush >= MANIFEST_FLUSH_BYTES:
-                            _persist_manifest(file, manifest, manifest_file)
+                            if not _persist_manifest(file, manifest, manifest_file):
+                                return _sync_failed(progress_manager, task, download_path)
                             since_flush = 0
                     estimator = _emit_progress(
                         progress_manager,
@@ -360,8 +382,8 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
                 progress_manager.update_task(task, completed=0, visible=False)
                 return DownloadOutcome.RETRYABLE_FAILURE
 
-            if manifest is not None:
-                _persist_manifest(file, manifest, manifest_file)
+            if manifest is not None and not _persist_manifest(file, manifest, manifest_file):
+                return _sync_failed(progress_manager, task, download_path)
 
     finally:
         if head_executor:

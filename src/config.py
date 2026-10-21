@@ -181,6 +181,19 @@ LINK_REFRESH_MAX = _env_int_clamped("LINK_REFRESH_MAX", 2, 0, 10)
 # Max discard-and-restart cycles per file attempt.
 MANIFEST_RESET_MAX = _env_int_clamped("MANIFEST_RESET_MAX", 1, 0, 5)
 
+# Optional process-wide ceiling on simultaneous streaming GETs across all
+# jobs (0 = none; every job keeps its own per-job cap either way).
+MAX_TOTAL_CONNECTIONS = _env_int_clamped("MAX_TOTAL_CONNECTIONS", 0, 0, 256)
+
+# HTTP timeouts on the download side (seconds). These describe the network
+# the container sits on rather than a download, so they are env-only.
+# HEAD probes: the size/ETag probe before each file and the content-length backfill.
+PROBE_TIMEOUT_SECONDS = _env_int_clamped("PROBE_TIMEOUT_SECONDS", 30, 1, 300)
+# Streaming GETs (segment workers and single streams): connect + per-read wait.
+TRANSFER_TIMEOUT_SECONDS = _env_int_clamped("TRANSFER_TIMEOUT_SECONDS", 30, 1, 600)
+# Item-page re-fetch and signing request when a signed URL has to be refreshed.
+ITEM_PAGE_TIMEOUT_SECONDS = _env_int_clamped("ITEM_PAGE_TIMEOUT_SECONDS", 20, 1, 120)
+
 _TRANSFER_CLAMPS: dict[str, tuple[int, int]] = {
     "segments": (1, 16),
     "segment_min_size_mb": (1, 4096),

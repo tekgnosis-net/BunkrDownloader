@@ -13,6 +13,7 @@ from src.config import DownloadInfo, NetworkContext, SessionInfo, resolve_transf
 from src.downloaders.connection_governor import ConnectionGovernor
 from src.downloaders.download_utils import DownloadOutcome
 from src.downloaders.media_downloader import MediaDownloader
+from src.downloaders import transfer_context
 from src.downloaders.transfer_context import TransferContext, make_transfer_context
 from src.downloaders.transfer_manifest import load_manifest, manifest_path, temp_path_for
 
@@ -48,6 +49,42 @@ def test_context_cap_is_max_of_connections_and_workers():
     assert make_transfer_context(_args(max_connections=2, max_workers=5)).governor.limit == 5
     assert make_transfer_context(_args(max_connections=7, max_workers=3)).governor.limit == 7
     assert make_transfer_context(None).governor.limit >= 1
+
+
+def test_no_process_ceiling_by_default(monkeypatch):
+    monkeypatch.setattr(transfer_context.config, "MAX_TOTAL_CONNECTIONS", 0)
+    assert transfer_context.process_ceiling() is None
+    assert make_transfer_context(_args()).governor.parent is None
+
+
+def test_process_ceiling_is_shared_by_every_job(monkeypatch):
+    monkeypatch.setattr(transfer_context.config, "MAX_TOTAL_CONNECTIONS", 3)
+    monkeypatch.setattr(transfer_context, "_CEILING", None)
+    a, b = make_transfer_context(_args()), make_transfer_context(_args())
+    assert a.governor.parent is b.governor.parent is transfer_context.process_ceiling()
+    assert a.governor.parent.limit == 3
+    assert make_transfer_context(_args(), ceiling=None).governor.parent is None
+
+
+def test_process_ceiling_caps_two_jobs_together(range_server, tmp_path, fake_live_manager):
+    range_server.chunk_delay = 0.01
+    ceiling = ConnectionGovernor(2)
+    results = []
+
+    def run(name):
+        ctx = make_transfer_context(_args(max_workers=4), ceiling=ceiling)
+        dl = _dl(fake_live_manager, tmp_path, range_server.url, ctx=ctx, filename=name)
+        results.append(dl.attempt_download(str(tmp_path / name)))
+
+    threads = [threading.Thread(target=run, args=(f"f{i}.bin",)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == [DownloadOutcome.SUCCESS] * 2
+    assert range_server.peak_in_flight <= 2          # 8 segments wanted, 2 at a time
+    for i in range(2):
+        assert _sha((tmp_path / f"f{i}.bin").read_bytes()) == _sha(range_server.data)
 
 
 def test_context_uses_callers_cancel_event_and_resolved_settings():
@@ -189,7 +226,7 @@ def test_cancel_mid_single_stream_stops_and_keeps_resumable_partial(
 
 
 def test_cancel_returns_promptly(range_server, tmp_path, fake_live_manager):
-    range_server.chunk_delay = 0.01
+    range_server.chunk_delay = 0.05        # a full transfer takes seconds; cancel must not
     dl = _dl(fake_live_manager, tmp_path, range_server.url)
     timer = threading.Timer(0.15, dl._ctx.cancel_event.set)
     start = time.monotonic()
@@ -198,7 +235,7 @@ def test_cancel_returns_promptly(range_server, tmp_path, fake_live_manager):
     elapsed = time.monotonic() - start
     timer.join()
     assert outcome is DownloadOutcome.RETRYABLE_FAILURE
-    assert elapsed < 0.15 + 1.0             # a full transfer needs ~0.4 s+ per segment
+    assert elapsed < 0.15 + 1.0             # a full transfer needs ~2 s+ per segment
     saved = load_manifest(manifest_path(temp_path_for(tmp_path / "file.bin")))
     assert saved is not None and 0 < saved.bytes_done < len(range_server.data)
 

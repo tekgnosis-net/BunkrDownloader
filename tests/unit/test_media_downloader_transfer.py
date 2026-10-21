@@ -141,6 +141,34 @@ def _seed_single(range_server, tmp_path, *, done, temp_bytes):
     return final, temp
 
 
+def _age(path, seconds: float) -> None:
+    """Move ``path``'s mtime ``seconds`` into the past (negative = future)."""
+    stamp = os.stat(path).st_mtime - seconds
+    os.utime(path, (stamp, stamp))
+
+
+def test_probe_failure_then_invalid_segmented_manifest_restarts_as_one_stream(
+    range_server, tmp_path, fake_live_manager,
+):
+    final = tmp_path / "file.bin"
+    temp = temp_path_for(final)
+    wrong_size = len(range_server.data) + 4096          # the remote changed since
+    manifest = TransferManifest.plan(wrong_size, 4, etag=range_server.etag)
+    manifest.segments[0].done = 10
+    with temp.open("wb") as fh:
+        fh.truncate(wrong_size)
+    save_manifest(manifest, manifest_path(temp))
+    dl = _dl(fake_live_manager, tmp_path, range_server.url)
+    with patch("src.downloaders.media_downloader.probe_remote",
+               return_value=RemoteInfo(None, None, False)):
+        assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
+    assert _sha(final.read_bytes()) == _sha(range_server.data)
+    assert not manifest_path(temp).exists()
+    assert any("one stream without resume" in d for _, d in fake_live_manager.logs)
+    # the reset happened once, then a plain full GET (no Range) finished the file
+    assert any("Restarting" in d for _, d in fake_live_manager.logs)
+
+
 def test_single_resume_with_missing_temp_restarts_from_zero(range_server, tmp_path, fake_live_manager):
     final, _ = _seed_single(range_server, tmp_path, done=1000, temp_bytes=None)
     dl = _dl(fake_live_manager, tmp_path, range_server.url, min_mb=100)
@@ -378,11 +406,21 @@ def test_partials_use_the_full_final_name(range_server, tmp_path, fake_live_mana
 def test_legacy_stem_temp_without_manifest_is_removed(range_server, tmp_path, fake_live_manager):
     legacy = tmp_path / "file.temp"                    # old builds: with_suffix(".temp")
     legacy.write_bytes(b"stale")
+    _age(legacy, 3600)                                 # from before this job started
     dl = _dl(fake_live_manager, tmp_path, range_server.url)
     final = tmp_path / "file.bin"
     assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
     assert not legacy.exists()
     assert _sha(final.read_bytes()) == _sha(range_server.data)
+
+
+def test_stem_temp_written_during_this_job_is_kept(range_server, tmp_path, fake_live_manager):
+    dl = _dl(fake_live_manager, tmp_path, range_server.url)
+    sibling = tmp_path / "file.temp"                   # e.g. a completed file named so
+    sibling.write_bytes(b"live")
+    _age(sibling, -60)                                 # modified after the job started
+    assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.SUCCESS
+    assert sibling.read_bytes() == b"live"
 
 
 def test_legacy_stem_temp_with_manifest_is_left_alone(range_server, tmp_path, fake_live_manager):

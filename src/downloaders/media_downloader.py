@@ -25,12 +25,14 @@ from src.bunkr_utils import (
 )
 from src.config import (
     DOWNLOAD_HEADERS,
+    ITEM_PAGE_TIMEOUT_SECONDS,
+    MAINTENANCE_BACKOFF_DELAYS_SECONDS,
+    STATUS_CHECK_ON_FAILURE,
+    TRANSFER_TIMEOUT_SECONDS,
     DownloadInfo,
     HTTPStatus,
     SessionInfo,
     TransferSettings,
-    STATUS_CHECK_ON_FAILURE,
-    MAINTENANCE_BACKOFF_DELAYS_SECONDS,
 )
 from src.crawlers.api_utils import get_signed_download_url
 from src.file_utils import (
@@ -106,6 +108,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         self._ctx = transfer_context or make_transfer_context(session_info.args)
         self._settings: TransferSettings | None = None
         self._remote: RemoteInfo | None = None
+        self._probe_failed = False      # the current _remote was synthesised from a manifest
         self._refreshes = 0
         self._resets = 0
 
@@ -128,8 +131,9 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         self._resets = 0
 
         temp_path = temp_path_for(final_path)
-        self._drop_legacy_temp(final_path, temp_path)
+        self._drop_legacy_temp(final_path, temp_path, before=self._ctx.started_at)
         remote = probe_remote(self.download_info.download_link, headers)
+        self._probe_failed = remote.size is None
         existing, remote = self._validate_existing(temp_path, remote)
         self._remote = remote
         plan = self._without_pwrite_fallback(plan_transfer(
@@ -155,20 +159,26 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         return outcome
 
     @staticmethod
-    def _drop_legacy_temp(final_path: str | Path, temp_path: Path) -> None:
+    def _drop_legacy_temp(final_path: str | Path, temp_path: Path, *, before: float) -> None:
         """Delete a manifest-less ``<stem>.temp`` left by builds that named partials so.
 
         Older releases wrote ``video.temp`` for ``video.mp4`` and simply
         overwrote it on the next attempt; with the ``video.mp4.temp`` name it
         would otherwise linger forever. A ``<stem>.temp`` that has a
         ``.parts`` manifest is left alone (it may be a live partial of a file
-        literally named ``<stem>``) and is swept by age like any partial.
+        literally named ``<stem>``) and is swept by age like any partial, and
+        so is one modified since ``before`` (the job's start): that one was
+        written by a running job, not by an old build.
         """
         legacy = Path(final_path).with_suffix(".temp")
-        if legacy == temp_path or manifest_path(legacy).exists() or not legacy.is_file():
+        if legacy == temp_path or manifest_path(legacy).exists():
             return
         try:
+            if legacy.stat().st_mtime >= before or not legacy.is_file():
+                return
             legacy.unlink()
+        except FileNotFoundError:
+            return
         except OSError as err:
             logging.debug("Could not remove legacy partial %s: %s", legacy, err)
 
@@ -240,6 +250,26 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         etag = remote.etag if remote is not None and remote.size is not None else fallback.etag
         return TransferManifest.plan(size, count, etag=etag, url_origin=fallback.url_origin)
 
+    def _manifest_after_reset(
+        self, count: int, fallback: TransferManifest,
+    ) -> TransferManifest | None:
+        """Manifest for the restart after a reset; ``None`` = one stream, no resume.
+
+        When the probe failed, the only size/ETag known came from the manifest
+        that just proved invalid, so there is nothing to plan a resumable
+        transfer from.
+        """
+        if not self._probe_failed:
+            return self._fresh_manifest(count, fallback)
+        self.live_manager.update_log(
+            event="Download progress",
+            details=(
+                f"Remote size unknown for {self.download_info.filename}; "
+                "downloading it as one stream without resume."
+            ),
+        )
+        return None
+
     def _reset_or_give_up(self, temp_path: Path) -> bool:
         """Discard an invalid partial; True to restart from 0, False once the cap is spent.
 
@@ -289,6 +319,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         self.download_info.download_link = fresh
         remote = probe_remote(fresh, headers)
         self._remote = remote
+        self._probe_failed = remote.size is None
         if (
             manifest is None
             or remote.size is None
@@ -368,7 +399,13 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
             if outcome is SegmentedOutcome.MANIFEST_INVALID:
                 if not self._reset_or_give_up(temp_path):
                     return DownloadOutcome.TERMINAL_FAILURE
-                manifest = self._fresh_manifest(len(manifest.segments), manifest)
+                fresh_manifest = self._manifest_after_reset(len(manifest.segments), manifest)
+                if fresh_manifest is None:
+                    return self._run_single(
+                        TransferPlan(TransferMode.SINGLE_NO_RESUME, None, plan.remote),
+                        temp_path, final_path, headers,
+                    )
+                manifest = fresh_manifest
                 continue
             if outcome is SegmentedOutcome.TERMINAL:
                 self.live_manager.update_log(
@@ -476,7 +513,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     try:
                         response = requests.get(
                             self.download_info.download_link, stream=True,
-                            headers=request_headers, timeout=30,
+                            headers=request_headers, timeout=TRANSFER_TIMEOUT_SECONDS,
                         )
                         verdict = self._single_verdict(response, resume_from, manifest)
                     except RequestException as req_err:
@@ -509,7 +546,8 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
             if verdict is _SingleVerdict.RESET:
                 if not self._reset_or_give_up(temp_path):
                     return DownloadOutcome.TERMINAL_FAILURE
-                manifest = self._fresh_manifest(1, manifest)
+                assert manifest is not None   # RESET needs a resume offset, hence a manifest
+                manifest = self._manifest_after_reset(1, manifest)
                 continue
             # _SingleVerdict.REFRESH
             if self._refreshes >= self._caps().link_refresh_max:
@@ -531,7 +569,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         network = self.session_info.network
         page_headers = network.headers if network is not None else None
         try:
-            page = requests.get(item_page, headers=page_headers, timeout=20)
+            page = requests.get(item_page, headers=page_headers, timeout=ITEM_PAGE_TIMEOUT_SECONDS)
             page.raise_for_status()
             soup = BeautifulSoup(page.text, "html.parser")
             link = get_signed_download_url(soup, network=network)

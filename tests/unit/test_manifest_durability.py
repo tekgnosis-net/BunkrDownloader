@@ -1,4 +1,8 @@
-"""A manifest may only claim bytes that were synced to disk first (C1)."""
+"""A manifest may only claim bytes that were synced to disk first (C1).
+
+Also: a failed sync is sticky (no later save), and the segmented snapshot is
+taken before the sync, never after it.
+"""
 
 # pylint: disable=missing-function-docstring
 from __future__ import annotations
@@ -114,3 +118,75 @@ def test_single_stream_interrupted_save_follows_fdatasync(
     assert outcome is DownloadOutcome.RETRYABLE_FAILURE
     assert [kind for _, kind in events] == ["sync", "save"]
     assert manifest.segments[0].done == 16
+
+
+# ---- sticky sync failure ------------------------------------------------------
+
+def _fail_sync_once(monkeypatch, module, events):
+    """Make the module's ``sync_data`` raise on its first call, then behave."""
+    calls = {"n": 0}
+    real = module.sync_data
+
+    def flaky(fd):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            events.append((threading.get_ident(), "sync-failed"))
+            raise OSError(5, "Input/output error")
+        events.append((threading.get_ident(), "sync"))
+        real(fd)
+    monkeypatch.setattr(module, "sync_data", flaky)
+
+
+def test_segmented_failed_sync_is_sticky(range_server, tmp_path, monkeypatch):
+    events: list[tuple[int, str]] = []
+    _fail_sync_once(monkeypatch, segmented_download, events)
+    monkeypatch.setattr(segmented_download, "save_manifest",
+                        lambda m, p: events.append((threading.get_ident(), "save")))
+    manifest = TransferManifest.plan(len(range_server.data), 4, etag=range_server.etag)
+    dl = SegmentedDownloader(url=range_server.url, headers={}, temp_path=tmp_path / "f.temp",
+                             manifest=manifest, progress_manager=_PM(), task=0,
+                             flush_bytes=256 * 1024)
+    assert dl.run() is SegmentedOutcome.TERMINAL
+    assert dl.last_os_error is not None
+    kinds = [kind for _, kind in events]
+    assert "sync-failed" in kinds
+    assert "save" not in kinds[kinds.index("sync-failed"):]   # nothing saved after the failure
+
+
+def test_single_stream_failed_sync_is_terminal(tmp_path: Path, fake_live_manager, monkeypatch):
+    events: list[tuple[int, str]] = []
+    _fail_sync_once(monkeypatch, download_utils, events)
+    monkeypatch.setattr(download_utils, "MANIFEST_FLUSH_BYTES", 16)
+    manifest = TransferManifest.plan(64, 1, etag=None)
+    response = _Response([b"a" * 16] * 4, {"Content-Length": "64"})
+    final = tmp_path / "f.bin"
+    outcome = save_file_with_progress(response, str(final), 0, fake_live_manager,
+                                      manifest=manifest)
+    assert outcome is DownloadOutcome.TERMINAL_FAILURE
+    assert not final.exists()                                  # never renamed
+    assert not (tmp_path / "f.bin.temp.parts").exists()        # nothing claimed
+    assert [kind for _, kind in events] == ["sync-failed"]     # stream stopped at once
+    assert any("Cannot sync" in d for _, d in fake_live_manager.logs)
+
+
+# ---- snapshot before sync -----------------------------------------------------
+
+def test_segmented_flush_snapshots_before_sync(tmp_path, monkeypatch):
+    """Bytes written by another worker *during* the sync must not be in the save."""
+    manifest = TransferManifest.plan(4096, 2, etag=None)
+    dl = SegmentedDownloader(url="http://unused/", headers={}, temp_path=tmp_path / "f.temp",
+                             manifest=manifest, progress_manager=_PM(), task=0)
+    assert dl._open() is None  # pylint: disable=protected-access
+    manifest.segments[0].done = 100
+
+    def sync_while_other_worker_writes(fd):
+        os.fsync(fd)
+        with dl._lock:  # pylint: disable=protected-access
+            manifest.segments[1].done = 500  # landed after the snapshot, before the save
+    monkeypatch.setattr(segmented_download, "sync_data", sync_while_other_worker_writes)
+    saved = {}
+    monkeypatch.setattr(segmented_download, "save_manifest",
+                        lambda m, p: saved.setdefault("done", [s.done for s in m.segments]))
+    dl._flush()  # pylint: disable=protected-access
+    dl._close_fd()  # pylint: disable=protected-access
+    assert saved["done"] == [100, 0]

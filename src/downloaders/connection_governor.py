@@ -3,6 +3,9 @@
 Each job owns one :class:`ConnectionGovernor` through its
 :class:`~src.downloaders.transfer_context.TransferContext`; every streaming
 GET (a segment worker or a single stream) holds one slot for its lifetime.
+A governor may have a ``parent`` (the optional process-wide ceiling): a slot
+is then held in both, the job's own first and the parent's second, so the
+scarcer process-wide slot is never held while waiting for a job slot.
 """
 
 from __future__ import annotations
@@ -28,10 +31,16 @@ class ConnectionGovernor:
     without recreating the object every worker already references.
     """
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, *, parent: ConnectionGovernor | None = None) -> None:
         self._limit = max(1, int(limit))
         self._in_flight = 0
         self._cond = threading.Condition()
+        self._parent = parent
+
+    @property
+    def parent(self) -> ConnectionGovernor | None:
+        """The governor whose slot is also held while one of ours is (or ``None``)."""
+        return self._parent
 
     @property
     def limit(self) -> int:
@@ -60,7 +69,8 @@ class ConnectionGovernor:
         """Hold one connection slot for the duration of the ``with`` block.
 
         While waiting for a free slot, raises :class:`Cancelled` as soon as
-        either event is set (polled every 0.2 s).
+        either event is set (polled every 0.2 s). With a ``parent``, its
+        slot is taken after ours and released before ours.
         """
         events = [event for event in (cancel_event, stop_event) if event is not None]
         with self._cond:
@@ -70,7 +80,11 @@ class ConnectionGovernor:
                 self._cond.wait(timeout=0.2)
             self._in_flight += 1
         try:
-            yield
+            if self._parent is None:
+                yield
+            else:
+                with self._parent.slot(cancel_event=cancel_event, stop_event=stop_event):
+                    yield
         finally:
             with self._cond:
                 self._in_flight -= 1
