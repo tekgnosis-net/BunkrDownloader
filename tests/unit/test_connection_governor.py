@@ -46,3 +46,24 @@ def test_slot_wait_is_cancellable():
         with pytest.raises(Cancelled):
             with gov.slot(cancel_event=cancel):
                 pass
+
+
+def test_slot_wait_wakes_on_stop_event():
+    gov = ConnectionGovernor(1)
+    stop = threading.Event()
+    raised = []
+
+    def waiter():
+        try:
+            with gov.slot(stop_event=stop):
+                pass
+        except Cancelled:
+            raised.append(True)
+    with gov.slot():
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        time.sleep(0.1)
+        assert thread.is_alive()                  # still waiting for the held slot
+        stop.set()
+        thread.join(timeout=2)
+    assert raised == [True] and gov.in_flight == 0

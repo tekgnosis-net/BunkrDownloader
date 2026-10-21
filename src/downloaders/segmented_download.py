@@ -22,7 +22,7 @@ from requests.exceptions import ChunkedEncodingError, RequestException
 from src.config import HTTPStatus, TransferSettings
 from src.managers.progress_manager import ProgressManager
 
-from .connection_governor import GOVERNOR, Cancelled, ConnectionGovernor
+from .connection_governor import Cancelled, ConnectionGovernor
 from .download_utils import MANIFEST_FLUSH_BYTES, get_chunk_size
 from .remote_probe import RemoteInfo
 from .transfer_manifest import (
@@ -111,7 +111,13 @@ class _ManifestInvalid(Exception):
 
 
 class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-few-public-methods
-    """Fetch every incomplete segment of ``manifest`` in parallel into ``temp_path``."""
+    """Fetch every incomplete segment of ``manifest`` in parallel into ``temp_path``.
+
+    ``governor`` is the job's connection cap (one slot per segment GET); when
+    omitted, a private governor with one slot per segment is used.
+    ``cancel_event`` is the job's cancel flag, checked between chunks and
+    while waiting for a slot.
+    """
 
     def __init__(  # pylint: disable=too-many-arguments
         self,
@@ -122,7 +128,7 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         manifest: TransferManifest,
         progress_manager: ProgressManager,
         task: int,
-        governor: ConnectionGovernor = GOVERNOR,
+        governor: ConnectionGovernor | None = None,
         cancel_event: threading.Event | None = None,
         timeout: float = 30.0,
         flush_bytes: int = MANIFEST_FLUSH_BYTES,
@@ -133,7 +139,7 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         self.manifest = manifest
         self.progress_manager = progress_manager
         self.task = task
-        self.governor = governor
+        self.governor = governor or ConnectionGovernor(len(manifest.segments))
         self.cancel_event = cancel_event or threading.Event()
         self.timeout = timeout
         self.flush_bytes = flush_bytes
@@ -176,7 +182,7 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
                     except (Cancelled, _Stopped, _LinkExpired, _RangeUnsupported,
                             _ManifestInvalid, OSError, RequestException,
                             ChunkedEncodingError) as exc:
-                        result = _classify(exc)
+                        result = self._vote(exc)
                         outcome = _worst(outcome, result)
                         if result is not SegmentedOutcome.RETRYABLE:
                             self._stop.set()   # private fail-fast; caller's event untouched
@@ -196,6 +202,14 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         return outcome
 
     # ---- internals ----------------------------------------------------------
+
+    def _vote(self, exc: Exception) -> SegmentedOutcome:
+        """Outcome a worker's exception stands for (see :func:`_classify`)."""
+        result = _classify(exc)
+        if result is SegmentedOutcome.CANCELLED and not self.cancel_event.is_set():
+            # A slot wait abandoned because of our own fail-fast: no vote.
+            return SegmentedOutcome.COMPLETE
+        return result
 
     def _close_fd(self) -> None:
         if self._fd is not None:
@@ -275,7 +289,7 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         headers = dict(self.headers)
         headers["Accept-Encoding"] = "identity"
         headers["Range"] = f"bytes={segment.next_offset}-{segment.end}"
-        with self.governor.slot(cancel_event=self.cancel_event):
+        with self.governor.slot(cancel_event=self.cancel_event, stop_event=self._stop):
             self._check_stop()
             with requests.get(self.url, headers=headers, stream=True, timeout=self.timeout) as resp:
                 self._check_response(resp, segment)

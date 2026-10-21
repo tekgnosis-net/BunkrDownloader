@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import shutil
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from enum import IntEnum
 from pathlib import Path
@@ -251,6 +252,7 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
     download_headers: dict[str, str] | None = None,
     resume_from: int = 0,
     manifest: TransferManifest | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> DownloadOutcome:
     """Save the file from the response to the specified path.
 
@@ -266,6 +268,10 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
     ``resume_from`` bytes are already in the ``.temp`` file; writing continues
     at that offset. ``manifest`` (single-segment) is kept in step with the
     byte count so an interrupted stream can resume on the next attempt.
+
+    ``cancel_event`` (the job's cancel flag) is checked between chunks: once
+    set, the manifest is synced and saved and ``RETRYABLE_FAILURE`` is
+    returned, leaving a resumable partial; the caller decides not to retry.
     """
     file_size, head_future, head_executor = _resolve_content_length(
         response, download_url, headers=download_headers,
@@ -299,6 +305,10 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
                 file.seek(resume_from)
             try:
                 for chunk in response.iter_content(chunk_size=chunk_size):
+                    if cancel_event is not None and cancel_event.is_set():
+                        if manifest is not None:
+                            _persist_manifest(file, manifest, manifest_file)
+                        return DownloadOutcome.RETRYABLE_FAILURE
                     if chunk is None:
                         continue
                     file.write(chunk)

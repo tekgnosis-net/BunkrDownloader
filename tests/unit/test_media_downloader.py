@@ -100,7 +100,7 @@ def test_handle_request_exception_branches(  # pylint: disable=too-many-argument
             "src.downloaders.media_downloader.refresh_server_status",
             return_value=(current_status, True),
         ),
-        patch("src.downloaders.media_downloader.time.sleep"),
+        patch.object(MediaDownloader, "_pause", return_value=True),
     ):
         result = downloader._handle_request_exception(  # pylint: disable=protected-access
             _fake_request_exception(status_code),
@@ -123,7 +123,7 @@ def test_maintenance_emits_structured_event(
             "src.downloaders.media_downloader.refresh_server_status",
             return_value=("Maintenance", True),
         ),
-        patch("src.downloaders.media_downloader.time.sleep"),
+        patch.object(MediaDownloader, "_pause", return_value=True),
         patch("src.downloaders.media_downloader.log_maintenance_event"),
     ):
         downloader._handle_request_exception(  # pylint: disable=protected-access

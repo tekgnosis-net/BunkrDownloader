@@ -30,6 +30,7 @@ from src.crawlers.crawler_utils import (
     get_download_info,
 )
 from src.downloaders.album_downloader import AlbumDownloader, MediaDownloader
+from src.downloaders.transfer_context import TransferContext, make_transfer_context
 from src.crawlers.api_utils import detect_item_page_maintenance
 from src.file_utils import (
     create_download_directory,
@@ -64,8 +65,15 @@ async def handle_download_process(
     url: str,
     initial_soup: BeautifulSoup,
     live_manager: LiveManager,
+    transfer_context: TransferContext | None = None,
 ) -> None:
-    """Handle the download process for a Bunkr album or a single item."""
+    """Handle the download process for a Bunkr album or a single item.
+
+    ``transfer_context`` (the job's settings, connection governor and cancel
+    flag) is shared by every file; one is built from the args when omitted.
+    """
+    if transfer_context is None:
+        transfer_context = make_transfer_context(session_info.args)
     if session_info.args:
         log_level = getattr(session_info.args, "log_level", "info")
         max_workers = getattr(session_info.args, "max_workers", MAX_WORKERS)
@@ -86,12 +94,12 @@ async def handle_download_process(
         item_pages = await extract_all_album_item_pages(
             initial_soup, host_page, url, network=session_info.network,
         )
-        album_downloader = AlbumDownloader(
+        await AlbumDownloader(
             session_info=session_info,
             album_info=AlbumInfo(album_id=identifier, item_pages=item_pages),
             live_manager=live_manager,
-        )
-        await album_downloader.download_album(max_workers=max_workers)
+            transfer_context=transfer_context,
+        ).download_album(max_workers=max_workers)
 
     # Single item download
     else:
@@ -129,10 +137,15 @@ async def handle_download_process(
                 download_link=download_link,
                 filename=filename,
                 task=task,
+                # The item page lets an expired signed URL be re-resolved mid-transfer.
+                item_page=url,
             ),
             live_manager=live_manager,
+            transfer_context=transfer_context,
         )
-        media_downloader.download()
+        # Off the event loop, like album items: the loop stays responsive (web
+        # progress, cancellation) and a cancel reaches the worker via the event.
+        await asyncio.to_thread(media_downloader.download)
 
 
 async def validate_and_download(
@@ -140,8 +153,18 @@ async def validate_and_download(
     url: str,
     live_manager: LiveManager,
     args: Namespace | None = None,
+    transfer_context: TransferContext | None = None,
 ) -> None:
-    """Validate the provided URL, and initiate the download process."""
+    """Validate the provided URL, and initiate the download process.
+
+    ``transfer_context`` lets the caller own the job's cancel flag (the web
+    layer sets it from the cancel endpoint); one is built from ``args`` when
+    omitted. Ctrl-C (``KeyboardInterrupt``) or task cancellation sets the
+    flag so download threads stop within one chunk, leaving resumable
+    partials.
+    """
+    if transfer_context is None:
+        transfer_context = make_transfer_context(args)
     log_level = getattr(args, "log_level", "info") if args else "info"
     logging.getLogger().setLevel(log_level.upper())
 
@@ -198,11 +221,17 @@ async def validate_and_download(
             url,
             soup,
             live_manager,
+            transfer_context,
         )
 
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Worker threads under asyncio.to_thread outlive the cancelled
+        # coroutine; the event is what actually stops them.
+        transfer_context.cancel_event.set()
+        raise
+
     except (RequestConnectionError, Timeout, RequestException) as err:
-        error_message = f"Error downloading from {url}: {err}"
-        raise RuntimeError(error_message) from err
+        raise RuntimeError(f"Error downloading from {url}: {err}") from err
 
 
 async def main() -> None:
@@ -233,4 +262,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # Python >= 3.11 re-raises Ctrl-C here after cancelling main().
+        sys.exit(1)

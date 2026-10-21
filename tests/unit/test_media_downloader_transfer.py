@@ -188,7 +188,7 @@ def test_refresh_cap_is_bounded(range_server, tmp_path, fake_live_manager):
     dl = _dl(fake_live_manager, tmp_path, range_server.url, item_page="https://bunkr.cr/f/abc",
              extra={"link_refresh_max": 2})
     with patch.object(dl, "_refresh_link", side_effect=lambda: range_server.url + "?t=x") as refresh, \
-            patch("src.downloaders.media_downloader.time.sleep"):
+            patch.object(MediaDownloader, "_pause", return_value=True):
         assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.RETRYABLE_FAILURE
     assert refresh.call_count == 2
 

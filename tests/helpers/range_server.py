@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import random
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 FILE_SIZE = 5 * 1024 * 1024
@@ -22,6 +23,7 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
         self.no_ranges = False
         self.forbid_from_request: int | None = None
         self.abort_once_after: int | None = None
+        self.chunk_delay = 0.0          # seconds slept after each body chunk (throttle)
         self.get_count = 0
         self.in_flight = 0
         self.peak_in_flight = 0
@@ -31,6 +33,7 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
 
         class Handler(BaseHTTPRequestHandler):  # pylint: disable=missing-class-docstring
             protocol_version = "HTTP/1.1"
+            counted = False      # this request is included in server.in_flight
 
             def log_message(self, *_args):  # silence
                 return
@@ -54,9 +57,16 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
                     count = server.get_count
                     server.in_flight += 1
                     server.peak_in_flight = max(server.peak_in_flight, server.in_flight)
+                self.counted = True
                 try:
                     self._respond_get(count)
                 finally:
+                    self._leave()
+
+            def _leave(self) -> None:
+                """Stop counting this request as in flight (idempotent per request)."""
+                if self.counted:
+                    self.counted = False
                     with server._lock:  # pylint: disable=protected-access
                         server.in_flight -= 1
 
@@ -104,6 +114,10 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
                 try:
                     for offset in range(0, len(body), CHUNK_SIZE):
                         chunk = body[offset:offset + CHUNK_SIZE]
+                        if offset + CHUNK_SIZE >= len(body):
+                            # Leave before the final bytes: once the client has them it
+                            # releases its slot, and the next GET must not overlap this one.
+                            self._leave()
                         if abort_at is not None and sent + len(chunk) > abort_at:
                             self.wfile.write(chunk[: max(0, abort_at - sent)])
                             self.wfile.flush()
@@ -112,6 +126,8 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
                             return
                         self.wfile.write(chunk)
                         sent += len(chunk)
+                        if server.chunk_delay and offset + CHUNK_SIZE < len(body):
+                            time.sleep(server.chunk_delay)
                 except (BrokenPipeError, ConnectionResetError):
                     # Client disconnected mid-body: return quietly, no socketserver traceback.
                     self.close_connection = True
@@ -127,6 +143,7 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
         self.no_ranges = False
         self.forbid_from_request = None
         self.abort_once_after = None
+        self.chunk_delay = 0.0
         self.get_count = 0
         self.peak_in_flight = 0
         self._aborted_once = False

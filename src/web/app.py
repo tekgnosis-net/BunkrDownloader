@@ -42,6 +42,7 @@ from src.config import (
     get_network_settings,
     resolve_transfer_settings,
 )
+from src.downloaders.transfer_context import make_transfer_context
 from src.file_utils import PathOutsideSandboxError, resolve_within_allowed_root
 from src.web.update_check import get_update_status
 
@@ -539,6 +540,9 @@ class Job:  # pylint: disable=too-many-instance-attributes
     manager: WebLiveManager | None = None
     task: asyncio.Task[None] | None = None
     error: str | None = None
+    # The job's TransferContext cancel flag: set by the cancel endpoint so
+    # download threads (which outlive task.cancel()) stop within one chunk.
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
     def __post_init__(self) -> None:
         # Binding the broker before the manager is constructed is load-bearing:
@@ -710,6 +714,11 @@ async def _run_download_job(job: Job) -> None:
         # ``validate_and_download`` can reproduce the same context inside.
         job_args_preview = _build_namespace(str(job.request.urls[0]), job.request)
         job_network = build_network_context(job_args_preview)
+        # One per job: its connection cap spans every URL of the job and the
+        # cancel endpoint reaches the download threads through its event.
+        transfer_context = make_transfer_context(
+            job_args_preview, cancel_event=job.cancel_event,
+        )
         bunkr_status = await asyncio.to_thread(get_bunkr_status_cached, job_network)
         if not isinstance(bunkr_status, dict):
             logger.warning(
@@ -729,7 +738,10 @@ async def _run_download_job(job: Job) -> None:
                 )
             manager.log_debug(event="Debug", details=f"Starting download for {url}")
             args = _build_namespace(str(url), job.request)
-            await validate_and_download(bunkr_status, str(url), manager, args=args)
+            await validate_and_download(
+                bunkr_status, str(url), manager, args=args,
+                transfer_context=transfer_context,
+            )
             manager.log_debug(event="Debug", details=f"Completed download for {url}")
 
         manager.stop()
@@ -928,6 +940,10 @@ async def cancel_download(job_id: str) -> dict[str, Any]:
         JobStatus.CANCELLED,
     }:
         return {"status": job.status.value}
+
+    # Stop the download threads first: task.cancel() alone only unwinds the
+    # coroutine, while asyncio.to_thread workers would finish their files.
+    job.cancel_event.set()
 
     if job.task is None:
         job.status = JobStatus.CANCELLED
