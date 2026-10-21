@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import math
 import shutil
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from enum import IntEnum
 from pathlib import Path
-from typing import Callable
+from typing import IO, Callable
 
 import requests
 from requests import Response
@@ -17,7 +18,17 @@ from requests.exceptions import ChunkedEncodingError, RequestException
 from src.config import DOWNLOAD_HEADERS, LARGE_FILE_CHUNK_SIZE, THRESHOLDS
 from src.managers.progress_manager import ProgressManager
 
+from .transfer_manifest import (
+    TransferManifest,
+    manifest_path,
+    save_manifest,
+    sync_data,
+    sync_file,
+    temp_path_for,
+)
+
 DEFAULT_UNKNOWN_SIZE_BASELINE = 50 * 1024 * 1024
+MANIFEST_FLUSH_BYTES = 8 * 1024 * 1024
 
 
 class DownloadOutcome(IntEnum):
@@ -124,6 +135,34 @@ def _log_once(progress_manager: ProgressManager, message: str) -> None:
         update_log(event="Download progress", details=message)
 
 
+def _remove_quietly(path: Path | None) -> None:
+    """Delete ``path`` if given; never raises (other errors are logged at debug)."""
+
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as err:
+        logging.debug("Could not remove %s: %s", path, err)
+
+
+def _persist_manifest(file: IO[bytes], manifest: TransferManifest, path: Path) -> None:
+    """Make every byte written so far durable, then record it in the manifest.
+
+    Best effort: an ``OSError`` is logged at debug level and the stream goes
+    on (a failed sync skips the save, so the manifest never over-claims).
+    """
+
+    try:
+        file.flush()
+        sync_data(file.fileno())
+        save_manifest(manifest, path)
+    except OSError as err:
+        logging.debug("Could not persist manifest %s: %s", path, err)
+
+
 class _ProgressEstimator:  # pylint: disable=too-few-public-methods
     """Track a rolling progress estimate when file size is unknown."""
 
@@ -172,7 +211,7 @@ def _emit_progress(
     return estimator
 
 # pylint: disable=too-many-arguments
-def _finalise_download(
+def finalise_download(
     *,
     file_size: int | None,
     total_downloaded: int,
@@ -180,6 +219,7 @@ def _finalise_download(
     final_path: str,
     progress_manager: ProgressManager,
     task: int,
+    manifest_file: Path | None = None,
 ) -> DownloadOutcome:
     """Rename the in-flight file if possible and report completion.
 
@@ -189,35 +229,30 @@ def _finalise_download(
     99% stall.
     """
 
-    if file_size:
-        if total_downloaded != file_size:
-            _log_once(
-                progress_manager,
-                f"Short read for {final_path}: {total_downloaded}/{file_size} bytes; will retry.",
-            )
-            progress_manager.update_task(task, completed=0, visible=False)
-            return DownloadOutcome.RETRYABLE_FAILURE
-        try:
-            shutil.move(temp_path, final_path)
-        except OSError as os_err:
-            _log_once(progress_manager, f"Could not finalise {final_path}: {os_err}")
-            progress_manager.update_task(task, completed=0, visible=False)
-            return DownloadOutcome.RETRYABLE_FAILURE
-        progress_manager.update_task(task, completed=100)
-        return DownloadOutcome.SUCCESS
+    if file_size and total_downloaded != file_size:
+        _log_once(
+            progress_manager,
+            f"Short read for {final_path}: {total_downloaded}/{file_size} bytes; will retry.",
+        )
+        progress_manager.update_task(task, completed=0, visible=False)
+        return DownloadOutcome.RETRYABLE_FAILURE
 
     try:
+        # Durable data before the rename: after a host crash the final name
+        # must never point at a file whose tail was still in the page cache.
+        sync_file(temp_path)
         shutil.move(temp_path, final_path)
     except OSError as os_err:
         _log_once(progress_manager, f"Could not finalise {final_path}: {os_err}")
         progress_manager.update_task(task, completed=0, visible=False)
         return DownloadOutcome.RETRYABLE_FAILURE
+    _remove_quietly(manifest_file)
     progress_manager.update_task(task, completed=100)
     return DownloadOutcome.SUCCESS
 # pylint: enable=too-many-arguments
 
 
-def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-arguments
+def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-arguments,too-many-branches,too-many-statements
     response: Response,
     download_path: str,
     task: int,
@@ -225,20 +260,36 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
     *,
     download_url: str | None = None,
     download_headers: dict[str, str] | None = None,
+    resume_from: int = 0,
+    manifest: TransferManifest | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> DownloadOutcome:
     """Save the file from the response to the specified path.
 
-    Adds a `.temp` extension for in-flight downloads and attempts to infer the
+    Writes to ``<final name>.temp`` while in flight and attempts to infer the
     content length so live progress can be reported accurately. When the server
     omits the header, a best-effort estimate is used so the UI still reflects
     activity while streaming. The optional ``download_headers`` are forwarded
     to the HEAD probe so the content-length backfill uses the same user-agent
     and referer as the streaming GET — otherwise per-job ``NetworkContext``
     overrides would be silently ignored for unknown-length files.
+
+    ``resume_from`` > 0 means the caller issued a Range GET and the first
+    ``resume_from`` bytes are already in the ``.temp`` file; writing continues
+    at that offset. ``manifest`` (single-segment) is kept in step with the
+    byte count so an interrupted stream can resume on the next attempt.
+
+    ``cancel_event`` (the job's cancel flag) is checked between chunks: once
+    set, the manifest is synced and saved and ``RETRYABLE_FAILURE`` is
+    returned, leaving a resumable partial; the caller decides not to retry.
     """
     file_size, head_future, head_executor = _resolve_content_length(
         response, download_url, headers=download_headers,
     )
+    if file_size is not None and resume_from:
+        file_size += resume_from  # Content-Length of a 206 is the remainder
+    if manifest is not None:
+        file_size = manifest.size
     if file_size is None:
         logging.warning("Content length unavailable for %s", download_path)
         _log_once(
@@ -246,10 +297,12 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
             "Server did not provide a content length. Progress will be estimated.",
         )
 
-    # Initialize a temporary download path with the .temp extension
-    temp_download_path = Path(download_path).with_suffix(".temp")
+    # In-flight bytes live in "<final name>.temp" until the final rename.
+    temp_download_path = temp_path_for(download_path)
+    manifest_file = manifest_path(temp_download_path) if manifest is not None else None
     chunk_size = get_chunk_size(file_size or 0)
-    total_downloaded = 0
+    total_downloaded = resume_from
+    since_flush = 0
     estimator = (
         _ProgressEstimator(float(DEFAULT_UNKNOWN_SIZE_BASELINE))
         if file_size is None
@@ -257,11 +310,25 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
     )
 
     try:
-        with temp_download_path.open("wb") as file:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk is not None:
+        with temp_download_path.open("r+b" if resume_from else "wb") as file:
+            if resume_from:
+                file.seek(resume_from)
+            try:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if cancel_event is not None and cancel_event.is_set():
+                        if manifest is not None:
+                            _persist_manifest(file, manifest, manifest_file)
+                        return DownloadOutcome.RETRYABLE_FAILURE
+                    if chunk is None:
+                        continue
                     file.write(chunk)
                     total_downloaded += len(chunk)
+                    since_flush += len(chunk)
+                    if manifest is not None:
+                        manifest.segments[0].done = total_downloaded
+                        if since_flush >= MANIFEST_FLUSH_BYTES:
+                            _persist_manifest(file, manifest, manifest_file)
+                            since_flush = 0
                     estimator = _emit_progress(
                         progress_manager,
                         task,
@@ -272,28 +339,29 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
                     if head_future and file_size is None and head_future.done():
                         head_length = head_future.result()
                         head_future = None
-
                         if head_length:
                             file_size = head_length
                             estimator = None
                             progress_manager.update_task(
                                 task,
-                                completed=min(
-                                    100.0,
-                                    (total_downloaded / file_size) * 100,
-                                ),
+                                completed=min(100.0, (total_downloaded / file_size) * 100),
                             )
 
-    # Handle partial downloads caused by network interruptions. The task would
-    # otherwise sit frozen at its last estimate — hide it and log so retry
-    # bookkeeping can reactivate it on the next attempt.
-    except ChunkedEncodingError:
-        _log_once(
-            progress_manager,
-            f"Partial transfer for {download_path}; the stream ended mid-chunk.",
-        )
-        progress_manager.update_task(task, completed=0, visible=False)
-        return DownloadOutcome.RETRYABLE_FAILURE
+            # Handle partial downloads caused by network interruptions. The task
+            # would otherwise sit frozen at its last estimate — hide it and log
+            # so retry bookkeeping can reactivate it on the next attempt.
+            except ChunkedEncodingError:
+                if manifest is not None:
+                    _persist_manifest(file, manifest, manifest_file)
+                _log_once(
+                    progress_manager,
+                    f"Partial transfer for {download_path}; the stream ended mid-chunk.",
+                )
+                progress_manager.update_task(task, completed=0, visible=False)
+                return DownloadOutcome.RETRYABLE_FAILURE
+
+            if manifest is not None:
+                _persist_manifest(file, manifest, manifest_file)
 
     finally:
         if head_executor:
@@ -310,11 +378,16 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
         if head_length:
             file_size = head_length
 
-    return _finalise_download(
+    return finalise_download(
         file_size=file_size,
         total_downloaded=total_downloaded,
         temp_path=temp_download_path,
         final_path=download_path,
         progress_manager=progress_manager,
         task=task,
+        manifest_file=manifest_file,
     )
+
+
+# Backwards-compatible alias for existing tests and callers.
+_finalise_download = finalise_download

@@ -6,12 +6,15 @@ download experience.
 
 from __future__ import annotations
 
+import logging
+import os
 import random
-import time
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import requests
+from bs4 import BeautifulSoup
 from requests import RequestException
 
 from src.bunkr_utils import (
@@ -25,83 +28,526 @@ from src.config import (
     DownloadInfo,
     HTTPStatus,
     SessionInfo,
+    TransferSettings,
     STATUS_CHECK_ON_FAILURE,
     MAINTENANCE_BACKOFF_DELAYS_SECONDS,
 )
+from src.crawlers.api_utils import get_signed_download_url
 from src.file_utils import (
     log_maintenance_event,
     truncate_filename,
     write_on_session_log,
 )
 
-from .download_utils import DownloadOutcome, save_file_with_progress
+from .connection_governor import Cancelled
+from .download_utils import DownloadOutcome, finalise_download, save_file_with_progress
+from .remote_probe import RemoteInfo, probe_remote
+from .segmented_download import (
+    SegmentedDownloader,
+    SegmentedOutcome,
+    TransferMode,
+    TransferPlan,
+    plan_transfer,
+)
+from .transfer_context import TransferContext, make_transfer_context
+from .transfer_manifest import (
+    TransferManifest,
+    discard_partial,
+    etags_conflict,
+    load_manifest,
+    manifest_matches_remote,
+    manifest_path,
+    temp_path_for,
+)
 
 if TYPE_CHECKING:
     from src.managers.live_manager import LiveManager
 
 
-class MediaDownloader:
-    """Manage the downloading of individual files from Bunkr URLs."""
+def _file_size(path: Path) -> int:
+    """Size of ``path`` in bytes, or -1 when it cannot be read."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return -1
 
-    def __init__(
+
+class _SingleVerdict(Enum):
+    """What to do with the response to a single-stream GET."""
+
+    STREAM = "stream"                      # write the body (at resume_from)
+    STREAM_FROM_ZERO = "stream_from_zero"  # server ignored Range: drop partial, use the 200 body
+    RESET = "reset"                        # 416 / bad Content-Range: partial is invalid
+    REFRESH = "refresh"                    # 401/403: signed URL expired
+
+
+class MediaDownloader:  # pylint: disable=too-many-instance-attributes
+    """Manage the downloading of individual files from Bunkr URLs.
+
+    ``transfer_context`` carries the job's settings, connection governor and
+    cancel flag; a private one is built from ``session_info.args`` when the
+    caller does not pass one (tests, standalone use).
+    """
+
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         session_info: SessionInfo,
         download_info: DownloadInfo,
         live_manager: LiveManager,
         retries: int = 5,
+        *,
+        transfer_context: TransferContext | None = None,
     ) -> None:
         """Initialize the MediaDownloader instance."""
         self.session_info = session_info
         self.download_info = download_info
         self.live_manager = live_manager
         self.retries = retries
+        self._ctx = transfer_context or make_transfer_context(session_info.args)
+        self._settings: TransferSettings | None = None
+        self._remote: RemoteInfo | None = None
+        self._refreshes = 0
+        self._resets = 0
+
+    def _caps(self) -> TransferSettings:
+        """Return the job's resolved transfer settings."""
+        return self._settings or self._ctx.settings
+
+    def _pause(self, seconds: float) -> bool:
+        """Back off for ``seconds``; False (immediately) if the job is cancelled."""
+        return not self._ctx.cancel_event.wait(seconds)
 
     def attempt_download(self, final_path: str) -> DownloadOutcome:
-        """Attempt to download the file with retries.
+        """Download ``final_path`` with retries, segmentation and resume."""
+        if self._ctx.cancelled:
+            return DownloadOutcome.RETRYABLE_FAILURE
+        headers = self._download_headers()
+        settings = self._ctx.settings
+        self._settings = settings
+        self._refreshes = 0
+        self._resets = 0
 
-        Returns a :class:`DownloadOutcome`. The inverted bool convention was
-        retired in PR2 — callers branch explicitly on
-        ``outcome is DownloadOutcome.SUCCESS``.
+        temp_path = temp_path_for(final_path)
+        self._drop_legacy_temp(final_path, temp_path)
+        remote = probe_remote(self.download_info.download_link, headers)
+        existing, remote = self._validate_existing(temp_path, remote)
+        self._remote = remote
+        plan = self._without_pwrite_fallback(plan_transfer(
+            remote, settings, existing=existing, url_origin=self.download_info.item_page,
+        ))
+        if plan.mode is TransferMode.SINGLE_NO_RESUME and manifest_path(temp_path).exists():
+            # Nothing can resume (no size or no Range support): a leftover
+            # manifest would only outlive the file and mislead a later run.
+            discard_partial(temp_path)
+        elif existing is not None and plan.manifest is existing and existing.bytes_done:
+            pct = existing.bytes_done * 100 // max(existing.size, 1)
+            self.live_manager.update_log(
+                event="Download progress",
+                details=f"Resuming {self.download_info.filename}: {pct}% already on disk.",
+            )
+        if plan.mode is TransferMode.SEGMENTED:
+            outcome = self._run_segmented(plan, temp_path, final_path, headers)
+        else:
+            outcome = self._run_single(plan, temp_path, final_path, headers)
+        if outcome is not DownloadOutcome.SUCCESS:
+            # Never leave a row frozen at its last percentage; a retry re-shows it.
+            self.live_manager.update_task(self.download_info.task, completed=0, visible=False)
+        return outcome
+
+    @staticmethod
+    def _drop_legacy_temp(final_path: str | Path, temp_path: Path) -> None:
+        """Delete a manifest-less ``<stem>.temp`` left by builds that named partials so.
+
+        Older releases wrote ``video.temp`` for ``video.mp4`` and simply
+        overwrote it on the next attempt; with the ``video.mp4.temp`` name it
+        would otherwise linger forever. A ``<stem>.temp`` that has a
+        ``.parts`` manifest is left alone (it may be a live partial of a file
+        literally named ``<stem>``) and is swept by age like any partial.
         """
-        download_headers = (
+        legacy = Path(final_path).with_suffix(".temp")
+        if legacy == temp_path or manifest_path(legacy).exists() or not legacy.is_file():
+            return
+        try:
+            legacy.unlink()
+        except OSError as err:
+            logging.debug("Could not remove legacy partial %s: %s", legacy, err)
+
+    def _validate_existing(
+        self, temp_path: Path, remote: RemoteInfo,
+    ) -> tuple[TransferManifest | None, RemoteInfo]:
+        """Load the on-disk manifest; return ``(usable_manifest, remote_to_plan_with)``.
+
+        When the HEAD probe failed but a structurally valid manifest with
+        progress exists, the transfer proceeds from the manifest's own
+        size/ETag: every 206 is then checked against them (``Content-Range``
+        total and, when both sides have one, the ETag), so a changed remote
+        is still caught before any byte is trusted.
+        """
+        existing = load_manifest(manifest_path(temp_path))
+        if existing is None:
+            return None, remote
+        if remote.size is None:
+            if existing.bytes_done:
+                # A failed probe says nothing about the remote: never throw away progress.
+                self.live_manager.update_log(
+                    event="Download progress",
+                    details=(
+                        f"Probe failed for {self.download_info.filename}; resuming from "
+                        "the on-disk partial and validating each range response."
+                    ),
+                )
+                return existing, RemoteInfo(
+                    size=existing.size, etag=existing.etag, accepts_ranges=True,
+                )
+            discard_partial(temp_path)
+            return None, remote
+        if not manifest_matches_remote(existing, size=remote.size, etag=remote.etag):
+            discard_partial(temp_path)
+            self.live_manager.update_log(
+                event="Download progress",
+                details=(
+                    f"Discarding stale partial for {self.download_info.filename}: "
+                    "remote file changed."
+                ),
+            )
+            return None, remote
+        return existing, remote
+
+    def _download_headers(self) -> dict[str, str]:
+        return (
             self.session_info.network.download_headers
             if self.session_info.network is not None
             else DOWNLOAD_HEADERS
         )
-        for attempt in range(self.retries):
-            try:
-                response = requests.get(
-                    self.download_info.download_link,
-                    stream=True,
-                    headers=download_headers,
-                    timeout=30,
-                )
-                response.raise_for_status()
 
-            except RequestException as req_err:
-                # Exit the loop if not retrying
-                if not self._handle_request_exception(req_err, attempt):
-                    break
+    def _without_pwrite_fallback(self, plan: TransferPlan) -> TransferPlan:
+        """Downgrade a segmented plan to a resumable single stream without ``os.pwrite``."""
+        if plan.mode is TransferMode.SEGMENTED and not hasattr(os, "pwrite"):
+            remote = plan.remote
+            return TransferPlan(
+                TransferMode.SINGLE,
+                TransferManifest.plan(
+                    remote.size, 1, etag=remote.etag, url_origin=self.download_info.item_page,
+                ),
+                remote,
+            )
+        return plan
 
-            else:
-                return save_file_with_progress(
-                    response,
-                    final_path,
-                    self.download_info.task,
-                    self.live_manager,
-                    download_url=self.download_info.download_link,
-                    # Propagate per-job headers so the HEAD probe used for
-                    # unknown-length downloads matches the streaming GET's
-                    # user-agent / referer — otherwise a different CDN
-                    # response can land in the content-length backfill.
-                    download_headers=download_headers,
-                )
+    def _fresh_manifest(self, count: int, fallback: TransferManifest) -> TransferManifest:
+        """Rebuild an empty manifest from the most recently probed remote."""
+        remote = self._remote
+        size = remote.size if remote is not None and remote.size is not None else fallback.size
+        etag = remote.etag if remote is not None and remote.size is not None else fallback.etag
+        return TransferManifest.plan(size, count, etag=etag, url_origin=fallback.url_origin)
 
-        # All retries exhausted — caller decides whether to queue a retry pass.
+    def _reset_or_give_up(self, temp_path: Path) -> bool:
+        """Discard an invalid partial; True to restart from 0, False once the cap is spent.
+
+        The partial is discarded either way, so a later run starts clean.
+        """
+        name = self.download_info.filename
+        discard_partial(temp_path)
+        if self._resets >= self._caps().manifest_reset_max:
+            self.live_manager.update_log(
+                event="Download error",
+                details=(
+                    f"Giving up on {name}: the on-disk partial was still invalid after "
+                    f"{self._resets} restart(s); it has been discarded."
+                ),
+            )
+            return False
+        self._resets += 1
+        self.live_manager.update_log(
+            event="Download progress",
+            details=f"Restarting {name} from 0: on-disk partial invalid.",
+        )
+        return True
+
+    def _refreshes_exhausted(self) -> DownloadOutcome:
+        """Log that the link-refresh budget is spent; the file is retryable later."""
+        self.live_manager.update_log(
+            event="Download progress",
+            details=(
+                f"Gave up re-resolving {self.download_info.filename} after "
+                f"{self._refreshes} refreshes."
+            ),
+        )
         return DownloadOutcome.RETRYABLE_FAILURE
+
+    def _take_refresh(self) -> str | None:
+        """Spend one link refresh; back off before every refresh after the first."""
+        if self._refreshes and not self._pause(3 + random.uniform(1, 3)):  # noqa: S311
+            return None
+        self._refreshes += 1
+        return self._refresh_link()
+
+    def _replan_after_refresh(
+        self, fresh: str, manifest: TransferManifest | None, temp_path: Path,
+        headers: dict[str, str],
+    ) -> TransferPlan | None:
+        """Adopt ``fresh`` and re-probe it; return a new plan if the remote changed."""
+        self.download_info.download_link = fresh
+        remote = probe_remote(fresh, headers)
+        self._remote = remote
+        if (
+            manifest is None
+            or remote.size is None
+            or manifest_matches_remote(manifest, size=remote.size, etag=remote.etag)
+        ):
+            return None
+        discard_partial(temp_path)
+        self.live_manager.update_log(
+            event="Download progress",
+            details=(
+                f"Discarding stale partial for {self.download_info.filename}: "
+                "remote file changed after link refresh."
+            ),
+        )
+        plan = plan_transfer(
+            remote, self._caps(), existing=None, url_origin=self.download_info.item_page,
+        )
+        return self._without_pwrite_fallback(plan)
+
+    def _run_segmented(  # pylint: disable=too-many-branches
+        self, plan: TransferPlan, temp_path: Path, final_path: str, headers: dict[str, str],
+    ) -> DownloadOutcome:
+        manifest = plan.manifest
+        assert manifest is not None
+        self.live_manager.update_log(
+            event="Download progress",
+            details=(
+                f"Segmented download: {len(manifest.segments)} x "
+                f"{manifest.segments[0].length / (1024 * 1024):.1f} MB for "
+                f"{self.download_info.filename}"
+            ),
+        )
+        attempt = 0
+        while attempt < self.retries:
+            if self._ctx.cancelled:
+                return DownloadOutcome.RETRYABLE_FAILURE
+            downloader = SegmentedDownloader(
+                url=self.download_info.download_link, headers=headers, temp_path=temp_path,
+                manifest=manifest, progress_manager=self.live_manager,
+                task=self.download_info.task, governor=self._ctx.governor,
+                cancel_event=self._ctx.cancel_event,
+            )
+            outcome = downloader.run()
+            if outcome is SegmentedOutcome.COMPLETE:
+                return finalise_download(
+                    file_size=manifest.size, total_downloaded=manifest.size,
+                    temp_path=temp_path, final_path=final_path,
+                    progress_manager=self.live_manager, task=self.download_info.task,
+                    manifest_file=manifest_path(temp_path),
+                )
+            if outcome is SegmentedOutcome.NEEDS_REFRESH:
+                if self._refreshes >= self._caps().link_refresh_max:
+                    return self._refreshes_exhausted()
+                fresh = self._take_refresh()
+                if fresh is None:
+                    return DownloadOutcome.RETRYABLE_FAILURE
+                replan = self._replan_after_refresh(fresh, manifest, temp_path, headers)
+                if replan is not None:
+                    if replan.mode is not TransferMode.SEGMENTED:
+                        return self._run_single(replan, temp_path, final_path, headers)
+                    manifest = replan.manifest
+                    assert manifest is not None
+                continue
+            if outcome is SegmentedOutcome.RANGE_UNSUPPORTED:
+                self.live_manager.update_log(
+                    event="Download progress",
+                    details=(
+                        f"Segmented download not possible for {self.download_info.filename}; "
+                        "using a single stream."
+                    ),
+                )
+                discard_partial(temp_path)
+                return self._run_single(
+                    TransferPlan(TransferMode.SINGLE_NO_RESUME, None, plan.remote),
+                    temp_path, final_path, headers,
+                )
+            if outcome is SegmentedOutcome.MANIFEST_INVALID:
+                if not self._reset_or_give_up(temp_path):
+                    return DownloadOutcome.TERMINAL_FAILURE
+                manifest = self._fresh_manifest(len(manifest.segments), manifest)
+                continue
+            if outcome is SegmentedOutcome.TERMINAL:
+                self.live_manager.update_log(
+                    event="Download error",
+                    details=(
+                        f"Cannot write {self.download_info.filename}: "
+                        f"{downloader.last_os_error or 'disk error'}; the partial is kept "
+                        "so a rerun can resume."
+                    ),
+                )
+                return DownloadOutcome.TERMINAL_FAILURE
+            if outcome is SegmentedOutcome.CANCELLED:
+                return DownloadOutcome.RETRYABLE_FAILURE
+            if downloader.last_error is not None:
+                # An HTTP status (429/5xx/521/...): same status-page check,
+                # maintenance event and backoff as the single-stream path.
+                if not self._handle_request_exception(downloader.last_error, attempt):
+                    break
+            elif not self._retry_with_backoff(attempt, event="Retrying download"):
+                break
+            attempt += 1
+        return DownloadOutcome.RETRYABLE_FAILURE
+
+    @staticmethod
+    def _content_range_ok(response: requests.Response, start: int, size: int) -> bool:
+        """True if the 206 ``Content-Range`` is exactly ``bytes start-(size-1)/size``."""
+        got = response.headers.get("Content-Range", "").replace(" ", "").lower()
+        return got == f"bytes{start}-{size - 1}/{size}"
+
+    def _drop_single_partial(self, temp_path: Path, manifest: TransferManifest) -> None:
+        discard_partial(temp_path)
+        manifest.segments[0].done = 0
+
+    def _single_resume_offset(self, temp_path: Path, manifest: TransferManifest | None) -> int:
+        """Bytes to skip with a Range GET; 0 (partial dropped) if the temp cannot back them."""
+        resume_from = manifest.segments[0].done if manifest is not None else 0
+        if not resume_from:
+            return 0
+        if _file_size(temp_path) >= resume_from:
+            return resume_from
+        self._drop_single_partial(temp_path, manifest)
+        self.live_manager.update_log(
+            event="Download progress",
+            details=(
+                f"Partial file for {self.download_info.filename} is missing or "
+                "short; restarting from the beginning."
+            ),
+        )
+        return 0
+
+    def _single_verdict(
+        self, response: requests.Response, resume_from: int, manifest: TransferManifest | None,
+    ) -> _SingleVerdict:
+        """Classify a single-stream response; raises ``HTTPError`` for other failures."""
+        status = response.status_code
+        if status == HTTPStatus.RANGE_NOT_SATISFIABLE and resume_from:
+            return _SingleVerdict.RESET
+        if status in (HTTPStatus.FORBIDDEN, HTTPStatus.UNAUTHORIZED):
+            return _SingleVerdict.REFRESH
+        response.raise_for_status()
+        if not resume_from or manifest is None:
+            return _SingleVerdict.STREAM
+        if status == HTTPStatus.OK:
+            return _SingleVerdict.STREAM_FROM_ZERO
+        if (
+            status != HTTPStatus.PARTIAL_CONTENT
+            or not self._content_range_ok(response, resume_from, manifest.size)
+            or etags_conflict(manifest.etag, response.headers.get("ETag"))
+        ):
+            return _SingleVerdict.RESET
+        return _SingleVerdict.STREAM
+
+    def _run_single(  # pylint: disable=too-many-branches
+        self, plan: TransferPlan, temp_path: Path, final_path: str, headers: dict[str, str],
+    ) -> DownloadOutcome:
+        """One stream (Range-resumed from the manifest), holding a governor slot.
+
+        The slot covers the GET and the body; every refresh, backoff and
+        hand-off to :meth:`_run_segmented` happens after it is released, so
+        no thread ever holds two slots.
+        """
+        manifest = plan.manifest
+        if manifest is not None and manifest.complete and _file_size(temp_path) == manifest.size:
+            # Every byte is already on disk (e.g. the rename failed last time):
+            # a Range from the end would only earn a 416 and a re-download.
+            return finalise_download(
+                file_size=manifest.size, total_downloaded=manifest.size,
+                temp_path=temp_path, final_path=final_path,
+                progress_manager=self.live_manager, task=self.download_info.task,
+                manifest_file=manifest_path(temp_path),
+            )
+        attempt = 0
+        while attempt < self.retries:
+            if self._ctx.cancelled:
+                return DownloadOutcome.RETRYABLE_FAILURE
+            resume_from = self._single_resume_offset(temp_path, manifest)
+            request_headers = dict(headers)
+            if resume_from:
+                request_headers["Range"] = f"bytes={resume_from}-"
+            failure: RequestException | None = None
+            verdict: _SingleVerdict | None = None
+            try:
+                with self._ctx.governor.slot(cancel_event=self._ctx.cancel_event):
+                    response: requests.Response | None = None
+                    try:
+                        response = requests.get(
+                            self.download_info.download_link, stream=True,
+                            headers=request_headers, timeout=30,
+                        )
+                        verdict = self._single_verdict(response, resume_from, manifest)
+                    except RequestException as req_err:
+                        if response is not None:
+                            response.close()
+                        failure = req_err
+                    else:
+                        if verdict is _SingleVerdict.STREAM_FROM_ZERO:
+                            self._drop_single_partial(temp_path, manifest)
+                            resume_from = 0
+                        if verdict in (_SingleVerdict.STREAM, _SingleVerdict.STREAM_FROM_ZERO):
+                            with response:
+                                return save_file_with_progress(
+                                    response, final_path, self.download_info.task,
+                                    self.live_manager,
+                                    download_url=self.download_info.download_link,
+                                    download_headers=headers, resume_from=resume_from,
+                                    manifest=manifest, cancel_event=self._ctx.cancel_event,
+                                )
+                        response.close()
+            except Cancelled:
+                return DownloadOutcome.RETRYABLE_FAILURE
+
+            # ---- outside the slot ----
+            if failure is not None:
+                if not self._handle_request_exception(failure, attempt):
+                    break
+                attempt += 1
+                continue
+            if verdict is _SingleVerdict.RESET:
+                if not self._reset_or_give_up(temp_path):
+                    return DownloadOutcome.TERMINAL_FAILURE
+                manifest = self._fresh_manifest(1, manifest)
+                continue
+            # _SingleVerdict.REFRESH
+            if self._refreshes >= self._caps().link_refresh_max:
+                return self._refreshes_exhausted()
+            fresh = self._take_refresh()
+            if fresh is not None:
+                replan = self._replan_after_refresh(fresh, manifest, temp_path, headers)
+                if replan is not None:
+                    if replan.mode is TransferMode.SEGMENTED:
+                        return self._run_segmented(replan, temp_path, final_path, headers)
+                    manifest = replan.manifest
+        return DownloadOutcome.RETRYABLE_FAILURE
+
+    def _refresh_link(self) -> str | None:
+        """Re-resolve the signed CDN URL from the item page; ``None`` if impossible."""
+        item_page = self.download_info.item_page
+        if not item_page:
+            return None
+        network = self.session_info.network
+        page_headers = network.headers if network is not None else None
+        try:
+            page = requests.get(item_page, headers=page_headers, timeout=20)
+            page.raise_for_status()
+            soup = BeautifulSoup(page.text, "html.parser")
+            link = get_signed_download_url(soup, network=network)
+        except (RequestException, ValueError, AttributeError):
+            return None
+        if link:
+            self.live_manager.update_log(
+                event="Download progress",
+                details=f"Signed URL expired; re-resolved {self.download_info.filename}.",
+            )
+        return link
 
     def download(self) -> dict | None:
         """Handle the download process."""
+        if self._ctx.cancelled:
+            return None
         is_final_attempt = self.retries == 1
         is_offline = subdomain_is_offline(
             self.download_info.download_link,
@@ -130,7 +576,9 @@ class MediaDownloader:
 
         # Handle failed download after retries
         if outcome is not DownloadOutcome.SUCCESS:
-            return self._handle_failed_download(is_final_attempt=is_final_attempt)
+            return self._handle_failed_download(
+                is_final_attempt=is_final_attempt, cancelled=self._ctx.cancelled,
+            )
 
         return None
 
@@ -204,8 +652,7 @@ class MediaDownloader:
                 # Standard exponential backoff
                 delay = 3 ** (attempt + 1) + random.uniform(1, 3)  # noqa: S311
 
-            time.sleep(delay)
-            return True
+            return self._pause(delay)
 
         return False
 
@@ -368,8 +815,22 @@ class MediaDownloader:
         self.live_manager.update_log(event="Request error", details=str(req_err))
         return False
 
-    def _handle_failed_download(self, *, is_final_attempt: bool) -> dict | None:
-        """Handle a failed download after all retry attempts."""
+    def _handle_failed_download(
+        self, *, is_final_attempt: bool, cancelled: bool = False,
+    ) -> dict | None:
+        """Handle a failed download after all retry attempts.
+
+        A ``cancelled`` job is never queued for the retry pass nor written to
+        the session log: its partial stays on disk for a later run.
+        """
+        if cancelled:
+            self.live_manager.update_log(
+                event="Download stopped",
+                details=f"Stopped {self.download_info.filename}: the job was cancelled.",
+            )
+            self.live_manager.update_task(self.download_info.task, visible=False)
+            return None
+
         if not is_final_attempt:
             self.live_manager.update_log(
                 event="Exceeded retry attempts",

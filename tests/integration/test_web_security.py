@@ -132,7 +132,7 @@ class TestPathSandbox:
             "src.web.app.ALLOWED_DOWNLOAD_ROOT", str(download_root),
         )
 
-        async def _noop(bunkr_status, url, manager, args=None):  # noqa: ARG001
+        async def _noop(bunkr_status, url, manager, args=None, transfer_context=None):  # noqa: ARG001
             pass
 
         with (

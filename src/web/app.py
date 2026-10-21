@@ -40,7 +40,9 @@ from src.config import (
     MAX_WORKERS,
     build_network_context,
     get_network_settings,
+    resolve_transfer_settings,
 )
+from src.downloaders.transfer_context import make_transfer_context
 from src.file_utils import PathOutsideSandboxError, resolve_within_allowed_root
 from src.web.update_check import get_update_status
 
@@ -105,6 +107,30 @@ class DownloadRequest(BaseModel):
         ge=1,
         le=10,
         description="Maximum concurrent album downloads to run.",
+    )
+    segments: int | None = Field(
+        default=None, ge=1, le=16,
+        description="Parallel byte ranges per file; omit to use the server default.",
+    )
+    segment_min_size_mb: int | None = Field(
+        default=None, ge=1, le=4096,
+        description="Files below this size use a single stream.",
+    )
+    max_connections: int | None = Field(
+        default=None, ge=1, le=64,
+        description="Cap on this job's simultaneous download connections (at least max_workers).",
+    )
+    partial_max_age_hours: int | None = Field(
+        default=None, ge=0, le=8760,
+        description="Delete abandoned partials older than this at job start; 0 disables.",
+    )
+    link_refresh_max: int | None = Field(
+        default=None, ge=0, le=10,
+        description="Max signed-URL re-resolutions per file attempt.",
+    )
+    manifest_reset_max: int | None = Field(
+        default=None, ge=0, le=5,
+        description="Max discard-and-restart cycles per file attempt.",
     )
     network: NetworkOverrides | None = Field(
         default=None,
@@ -514,6 +540,9 @@ class Job:  # pylint: disable=too-many-instance-attributes
     manager: WebLiveManager | None = None
     task: asyncio.Task[None] | None = None
     error: str | None = None
+    # The job's TransferContext cancel flag: set by the cancel endpoint so
+    # download threads (which outlive task.cancel()) stop within one chunk.
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
     def __post_init__(self) -> None:
         # Binding the broker before the manager is constructed is load-bearing:
@@ -650,6 +679,12 @@ def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
         disable_disk_check=request.disable_disk_check,
         log_level=request.log_level,
         max_workers=request.max_workers,
+        segments=request.segments,
+        segment_min_size_mb=request.segment_min_size_mb,
+        max_connections=request.max_connections,
+        partial_max_age_hours=request.partial_max_age_hours,
+        link_refresh_max=request.link_refresh_max,
+        manifest_reset_max=request.manifest_reset_max,
         status_page=request.network.status_page if request.network else None,
         bunkr_api=request.network.api_endpoint if request.network else None,
         download_referer=request.network.download_referer if request.network else None,
@@ -679,6 +714,11 @@ async def _run_download_job(job: Job) -> None:
         # ``validate_and_download`` can reproduce the same context inside.
         job_args_preview = _build_namespace(str(job.request.urls[0]), job.request)
         job_network = build_network_context(job_args_preview)
+        # One per job: its connection cap spans every URL of the job and the
+        # cancel endpoint reaches the download threads through its event.
+        transfer_context = make_transfer_context(
+            job_args_preview, cancel_event=job.cancel_event,
+        )
         bunkr_status = await asyncio.to_thread(get_bunkr_status_cached, job_network)
         if not isinstance(bunkr_status, dict):
             logger.warning(
@@ -698,7 +738,10 @@ async def _run_download_job(job: Job) -> None:
                 )
             manager.log_debug(event="Debug", details=f"Starting download for {url}")
             args = _build_namespace(str(url), job.request)
-            await validate_and_download(bunkr_status, str(url), manager, args=args)
+            await validate_and_download(
+                bunkr_status, str(url), manager, args=args,
+                transfer_context=transfer_context,
+            )
             manager.log_debug(event="Debug", details=f"Completed download for {url}")
 
         manager.stop()
@@ -820,10 +863,22 @@ app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 
 @app.get("/api/settings/defaults")
-async def get_settings_defaults() -> dict[str, dict[str, str]]:
-    """Return default settings so the frontend can mirror server configuration."""
+async def get_settings_defaults() -> dict[str, dict[str, Any]]:
+    """Return server-resolved defaults (built-in < env) so the UI can seed its settings."""
 
-    return {"network": get_network_settings()}
+    transfer = resolve_transfer_settings(None)
+    return {
+        "network": get_network_settings(),
+        "download": {
+            "max_workers": MAX_WORKERS,
+            "segments": transfer.segments,
+            "segment_min_size_mb": transfer.segment_min_bytes // (1024 * 1024),
+            "max_connections": transfer.max_connections,
+            "partial_max_age_hours": transfer.partial_max_age_hours,
+            "link_refresh_max": transfer.link_refresh_max,
+            "manifest_reset_max": transfer.manifest_reset_max,
+        },
+    }
 
 
 @app.post("/api/downloads", response_model=DownloadResponse)
@@ -885,6 +940,10 @@ async def cancel_download(job_id: str) -> dict[str, Any]:
         JobStatus.CANCELLED,
     }:
         return {"status": job.status.value}
+
+    # Stop the download threads first: task.cancel() alone only unwinds the
+    # coroutine, while asyncio.to_thread workers would finish their files.
+    job.cancel_event.set()
 
     if job.task is None:
         job.status = JobStatus.CANCELLED

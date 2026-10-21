@@ -7,6 +7,7 @@ integrating with live task displays.
 import asyncio
 from asyncio import Semaphore
 from collections import defaultdict
+from pathlib import Path
 
 from src.bunkr_utils import get_subdomain, refresh_server_status
 from src.config import (
@@ -24,6 +25,8 @@ from src.general_utils import fetch_page
 from src.managers.live_manager import LiveManager
 
 from .media_downloader import MediaDownloader
+from .segmented_download import cleanup_stale_partials
+from .transfer_context import TransferContext, make_transfer_context
 
 
 class AlbumDownloader:
@@ -34,12 +37,19 @@ class AlbumDownloader:
         session_info: SessionInfo,
         album_info: AlbumInfo,
         live_manager: LiveManager,
+        transfer_context: TransferContext | None = None,
     ) -> None:
-        """Initialize the AlbumDownloader instance."""
+        """Initialize the AlbumDownloader instance.
+
+        ``transfer_context`` is the job's shared settings/governor/cancel flag;
+        every item download and the retry pass use it. One is built from
+        ``session_info.args`` when omitted.
+        """
         self.session_info = session_info
         self.album_info = album_info
         self.live_manager = live_manager
         self.failed_downloads = []
+        self.transfer_context = transfer_context or make_transfer_context(session_info.args)
 
     async def execute_item_download(
         self,
@@ -108,6 +118,7 @@ class AlbumDownloader:
                 item_page=item_page,
             ),
             live_manager=self.live_manager,
+            transfer_context=self.transfer_context,
         )
 
         failed_download = await asyncio.to_thread(media_downloader.download)
@@ -168,6 +179,17 @@ class AlbumDownloader:
 
     async def download_album(self, max_workers: int = MAX_WORKERS) -> None:
         """Handle the album download."""
+        settings = self.transfer_context.settings
+        # Directory scan + unlinks: keep them off the event loop.
+        removed = await asyncio.to_thread(
+            cleanup_stale_partials,
+            Path(self.session_info.download_path), settings.partial_max_age_hours,
+        )
+        for path in removed:
+            self.live_manager.update_log(
+                event="Stale partial removed",
+                details=f"Deleted abandoned partial download {path.name}",
+            )
         num_tasks = len(self.album_info.item_pages)
         self.live_manager.add_overall_task(
             description=self.album_info.album_id,
@@ -235,6 +257,7 @@ class AlbumDownloader:
             ),
             live_manager=self.live_manager,
             retries=1,  # Retry once for failed downloads
+            transfer_context=self.transfer_context,
         )
         # Run the synchronous download function in a separate thread
         await asyncio.to_thread(media_downloader.download)

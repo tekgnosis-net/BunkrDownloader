@@ -17,6 +17,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from argparse import Namespace
 
+# Constants for file sizes, expressed in bytes.
+KB = 1024
+MB = 1024 * KB
+GB = 1024 * MB
+
 
 # ============================
 # Paths and Files
@@ -159,6 +164,73 @@ MAINTENANCE_BACKOFF_DELAYS_SECONDS = _env_int_list_clamped(
     "MAINTENANCE_BACKOFF_DELAYS_SECONDS", (120, 300, 600), 1, 3600,
 )
 
+# ============================
+# Transfer (segmented + resumable downloads)
+# ============================
+# Parallel byte ranges per file; 1 = single stream (still resumable).
+DOWNLOAD_SEGMENTS = _env_int_clamped("DOWNLOAD_SEGMENTS", 4, 1, 16)
+# Files smaller than this stay single-stream; also the minimum bytes per segment.
+SEGMENT_MIN_FILE_SIZE_MB = _env_int_clamped("SEGMENT_MIN_FILE_SIZE_MB", 32, 1, 4096)
+# Default per-job cap on simultaneous streaming GETs (segments and single streams);
+# each job's governor is sized max(this, max_workers).
+MAX_CONCURRENT_CONNECTIONS = _env_int_clamped("MAX_CONCURRENT_CONNECTIONS", 12, 1, 64)
+# Abandoned .temp/.temp.parts older than this are deleted at job start; 0 disables.
+PARTIAL_MAX_AGE_HOURS = _env_int_clamped("PARTIAL_MAX_AGE_HOURS", 168, 0, 8760)
+# Max signed-URL re-resolutions per file attempt.
+LINK_REFRESH_MAX = _env_int_clamped("LINK_REFRESH_MAX", 2, 0, 10)
+# Max discard-and-restart cycles per file attempt.
+MANIFEST_RESET_MAX = _env_int_clamped("MANIFEST_RESET_MAX", 1, 0, 5)
+
+_TRANSFER_CLAMPS: dict[str, tuple[int, int]] = {
+    "segments": (1, 16),
+    "segment_min_size_mb": (1, 4096),
+    "max_connections": (1, 64),
+    "partial_max_age_hours": (0, 8760),
+    "link_refresh_max": (0, 10),
+    "manifest_reset_max": (0, 5),
+}
+
+
+@dataclass(frozen=True)
+class TransferSettings:
+    """Resolved per-job transfer knobs (built-in < env < per-job value)."""
+
+    segments: int
+    segment_min_bytes: int
+    max_connections: int
+    partial_max_age_hours: int
+    link_refresh_max: int
+    manifest_reset_max: int
+
+
+def _clamped_arg(args: Namespace | None, name: str, default: int) -> int:
+    value = getattr(args, name, None) if args is not None else None
+    if value is None:
+        return default
+    lower, upper = _TRANSFER_CLAMPS[name]
+    try:
+        return max(lower, min(upper, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def resolve_transfer_settings(args: Namespace | None) -> TransferSettings:
+    """Return the effective transfer settings for a job.
+
+    Env-derived module constants are the defaults; any attribute present and
+    non-``None`` on ``args`` (CLI flag or web request field) overrides it and
+    is clamped to the same bounds. Env values are defaults; any attribute
+    present on args overrides within the same bounds.
+    """
+    return TransferSettings(
+        segments=_clamped_arg(args, "segments", DOWNLOAD_SEGMENTS),
+        segment_min_bytes=_clamped_arg(args, "segment_min_size_mb", SEGMENT_MIN_FILE_SIZE_MB) * MB,
+        max_connections=_clamped_arg(args, "max_connections", MAX_CONCURRENT_CONNECTIONS),
+        partial_max_age_hours=_clamped_arg(args, "partial_max_age_hours", PARTIAL_MAX_AGE_HOURS),
+        link_refresh_max=_clamped_arg(args, "link_refresh_max", LINK_REFRESH_MAX),
+        manifest_reset_max=_clamped_arg(args, "manifest_reset_max", MANIFEST_RESET_MAX),
+    )
+
 # Web job memory bounds (PR2)
 JOB_EVENT_RETENTION = int(os.getenv("JOB_EVENT_RETENTION", "2000"))
 JOB_TTL_HOURS = int(os.getenv("JOB_TTL_HOURS", "24"))
@@ -181,11 +253,6 @@ ALLOWED_ORIGIN_REGEX = os.getenv(
 # Mapping of URL identifiers to a boolean for album (True) vs single file (False).
 URL_TYPE_MAPPING = {"a": True, "f": False, "i": False, "v": False}
 
-# Constants for file sizes, expressed in bytes.
-KB = 1024
-MB = 1024 * KB
-GB = 1024 * MB
-
 # Thresholds for file sizes and corresponding chunk sizes used during download.
 THRESHOLDS = [
     (1 * MB, 32 * KB),    # Less than 1 MB
@@ -207,7 +274,10 @@ class HTTPStatus(IntEnum):
     """Enumeration of common HTTP status codes used in the project."""
 
     OK = 200
+    PARTIAL_CONTENT = 206
+    UNAUTHORIZED = 401
     FORBIDDEN = 403
+    RANGE_NOT_SATISFIABLE = 416
     TOO_MANY_REQUESTS = 429
     INTERNAL_ERROR = 500
     BAD_GATEWAY = 502
@@ -495,6 +565,47 @@ def add_common_arguments(parser: ArgumentParser) -> None:
             "Strategy for handling maintenance: 'backoff' retries with delays, "
             "'skip' logs and skips (default: %(default)s)."
         ),
+    )
+    parser.add_argument(
+        "--segments",
+        type=int,
+        default=DOWNLOAD_SEGMENTS,
+        help="Parallel byte ranges per file, 1-16; 1 = single stream (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--segment-min-size-mb",
+        type=int,
+        default=SEGMENT_MIN_FILE_SIZE_MB,
+        help="Files below this size (MB) use a single stream (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--max-connections",
+        type=int,
+        default=MAX_CONCURRENT_CONNECTIONS,
+        help="Per-job cap on simultaneous download connections (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--partial-max-age-hours",
+        type=int,
+        default=PARTIAL_MAX_AGE_HOURS,
+        help=(
+            "Delete abandoned partial downloads older than this at job start; "
+            "0 disables (default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--link-refresh-max",
+        dest="link_refresh_max",
+        type=int,
+        default=LINK_REFRESH_MAX,
+        help="Max signed-URL re-resolutions per file attempt, 0-10 (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--manifest-reset-max",
+        dest="manifest_reset_max",
+        type=int,
+        default=MANIFEST_RESET_MAX,
+        help="Max discard-and-restart cycles per file attempt, 0-5 (default: %(default)s).",
     )
 
 

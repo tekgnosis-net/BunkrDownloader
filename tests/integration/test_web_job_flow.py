@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from src.web import app as web_app
 from src.web.app import app as fastapi_app
 
 
 # Signature mirrors validate_and_download so the keyword-only call site
 # from _run_download_job keeps working.
-async def _fake_validate(bunkr_status, url, manager, args=None):  # pylint: disable=unused-argument
+async def _fake_validate(bunkr_status, url, manager, args=None, transfer_context=None):  # pylint: disable=unused-argument,line-too-long
     manager.add_overall_task("fake-album", num_tasks=1)
     task = manager.add_task(current_task=0)
     for pct in (25, 50, 75, 100):
@@ -110,3 +112,32 @@ def test_parallel_jobs_do_not_cross_contaminate_events() -> None:
         details_b = {e.get("details") for e in events_b}
         assert "done https://bunkr.test/a/2" not in details_a
         assert "done https://bunkr.test/a/1" not in details_b
+
+
+def test_cancel_endpoint_sets_the_jobs_transfer_cancel_event() -> None:
+    """``POST /cancel`` must reach download threads, not only the asyncio task."""
+
+    seen: list = []
+
+    async def _blocking(bunkr_status, url, manager, args=None, transfer_context=None):  # pylint: disable=unused-argument
+        seen.append(transfer_context)
+        await asyncio.sleep(30)
+
+    with (
+        patch("src.web.app.validate_and_download", side_effect=_blocking),
+        patch("src.web.app.get_bunkr_status_cached", return_value={}),
+        TestClient(fastapi_app) as client,
+    ):
+        job_id = client.post(
+            "/api/downloads", json={"urls": ["https://bunkr.test/a/c"]},
+        ).json()["job_id"]
+        deadline = time.time() + 5
+        while not seen and time.time() < deadline:
+            time.sleep(0.02)
+        assert seen and seen[0] is not None
+        assert not seen[0].cancel_event.is_set()
+
+        resp = client.post(f"/api/downloads/{job_id}/cancel")
+        assert resp.json()["status"] == "cancelled"
+        assert seen[0].cancel_event.is_set()
+        assert seen[0].cancel_event is web_app.job_store.get(job_id).cancel_event
