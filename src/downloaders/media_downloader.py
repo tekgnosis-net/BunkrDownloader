@@ -6,12 +6,15 @@ download experience.
 
 from __future__ import annotations
 
+import asyncio
+import os
 import random
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import requests
+from bs4 import BeautifulSoup
 from requests import RequestException
 
 from src.bunkr_utils import (
@@ -24,17 +27,36 @@ from src.config import (
     DOWNLOAD_HEADERS,
     DownloadInfo,
     HTTPStatus,
+    MAX_WORKERS,
     SessionInfo,
+    resolve_transfer_settings,
     STATUS_CHECK_ON_FAILURE,
     MAINTENANCE_BACKOFF_DELAYS_SECONDS,
 )
+from src.crawlers.crawler_utils import get_download_info
 from src.file_utils import (
     log_maintenance_event,
     truncate_filename,
     write_on_session_log,
 )
 
-from .download_utils import DownloadOutcome, save_file_with_progress
+from .connection_governor import GOVERNOR
+from .download_utils import DownloadOutcome, finalise_download, save_file_with_progress
+from .remote_probe import probe_remote
+from .segmented_download import (
+    SegmentedDownloader,
+    SegmentedOutcome,
+    TransferMode,
+    TransferPlan,
+    plan_transfer,
+)
+from .transfer_manifest import (
+    TransferManifest,
+    discard_partial,
+    load_manifest,
+    manifest_matches_remote,
+    manifest_path,
+)
 
 if TYPE_CHECKING:
     from src.managers.live_manager import LiveManager
@@ -57,48 +79,179 @@ class MediaDownloader:
         self.retries = retries
 
     def attempt_download(self, final_path: str) -> DownloadOutcome:
-        """Attempt to download the file with retries.
+        """Download ``final_path`` with retries, segmentation and resume."""
+        headers = self._download_headers()
+        settings = resolve_transfer_settings(self.session_info.args)
+        max_workers = getattr(self.session_info.args, "max_workers", MAX_WORKERS) or MAX_WORKERS
+        GOVERNOR.raise_limit(max(settings.max_connections, max_workers))
 
-        Returns a :class:`DownloadOutcome`. The inverted bool convention was
-        retired in PR2 — callers branch explicitly on
-        ``outcome is DownloadOutcome.SUCCESS``.
-        """
-        download_headers = (
+        temp_path = Path(final_path).with_suffix(".temp")
+        remote = probe_remote(self.download_info.download_link, headers)
+        existing = load_manifest(manifest_path(temp_path))
+        if existing is not None and not manifest_matches_remote(
+            existing, size=remote.size, etag=remote.etag,
+        ):
+            discard_partial(temp_path)
+            self.live_manager.update_log(
+                event="Download progress",
+                details=(
+                    f"Discarding stale partial for {self.download_info.filename}: "
+                    "remote file changed."
+                ),
+            )
+            existing = None
+        plan = plan_transfer(
+            remote, settings, existing=existing, url_origin=self.download_info.item_page,
+        )
+        if existing is not None and existing.bytes_done:
+            pct = existing.bytes_done * 100 // max(existing.size, 1)
+            self.live_manager.update_log(
+                event="Download progress",
+                details=f"Resuming {self.download_info.filename}: {pct}% already on disk.",
+            )
+        if plan.mode is TransferMode.SEGMENTED and not hasattr(os, "pwrite"):
+            # No positional writes (Windows): fall back to a resumable single stream.
+            plan = TransferPlan(
+                TransferMode.SINGLE,
+                TransferManifest.plan(
+                    remote.size, 1, etag=remote.etag, url_origin=self.download_info.item_page,
+                ),
+                remote,
+            )
+        if plan.mode is TransferMode.SEGMENTED:
+            return self._run_segmented(plan, temp_path, final_path, headers)
+        return self._run_single(plan, temp_path, final_path, headers)
+
+    def _download_headers(self) -> dict[str, str]:
+        return (
             self.session_info.network.download_headers
             if self.session_info.network is not None
             else DOWNLOAD_HEADERS
         )
+
+    def _run_segmented(  # pylint: disable=too-many-return-statements
+        self, plan: TransferPlan, temp_path: Path, final_path: str, headers: dict[str, str],
+    ) -> DownloadOutcome:
+        manifest = plan.manifest
+        assert manifest is not None
+        self.live_manager.update_log(
+            event="Download progress",
+            details=(
+                f"Segmented download: {len(manifest.segments)} x "
+                f"{manifest.segments[0].length / (1024 * 1024):.1f} MB for "
+                f"{self.download_info.filename}"
+            ),
+        )
+        manifest_reset = False
         for attempt in range(self.retries):
+            outcome = SegmentedDownloader(
+                url=self.download_info.download_link, headers=headers, temp_path=temp_path,
+                manifest=manifest, progress_manager=self.live_manager,
+                task=self.download_info.task,
+            ).run()
+            if outcome is SegmentedOutcome.COMPLETE:
+                return finalise_download(
+                    file_size=manifest.size, total_downloaded=manifest.size,
+                    temp_path=temp_path, final_path=final_path,
+                    progress_manager=self.live_manager, task=self.download_info.task,
+                    manifest_file=manifest_path(temp_path),
+                )
+            if outcome is SegmentedOutcome.NEEDS_REFRESH:
+                fresh = self._refresh_link()
+                if fresh is None:
+                    return DownloadOutcome.RETRYABLE_FAILURE
+                self.download_info.download_link = fresh
+                continue
+            if outcome is SegmentedOutcome.RANGE_UNSUPPORTED:
+                discard_partial(temp_path)
+                return self._run_single(
+                    TransferPlan(TransferMode.SINGLE_NO_RESUME, None, plan.remote),
+                    temp_path, final_path, headers,
+                )
+            if outcome is SegmentedOutcome.MANIFEST_INVALID:
+                if manifest_reset:
+                    return DownloadOutcome.TERMINAL_FAILURE
+                discard_partial(temp_path)
+                manifest = TransferManifest.plan(
+                    manifest.size, len(manifest.segments),
+                    etag=manifest.etag, url_origin=manifest.url_origin,
+                )
+                manifest_reset = True
+                continue
+            if outcome is SegmentedOutcome.TERMINAL:
+                return DownloadOutcome.TERMINAL_FAILURE
+            if outcome is SegmentedOutcome.CANCELLED:
+                return DownloadOutcome.RETRYABLE_FAILURE
+            if not self._retry_with_backoff(attempt, event="Retrying download"):
+                break
+        return DownloadOutcome.RETRYABLE_FAILURE
+
+    def _run_single(  # pylint: disable=too-many-return-statements
+        self, plan: TransferPlan, temp_path: Path, final_path: str, headers: dict[str, str],
+    ) -> DownloadOutcome:
+        manifest = plan.manifest
+        for attempt in range(self.retries):
+            resume_from = manifest.segments[0].done if manifest is not None else 0
+            request_headers = dict(headers)
+            if resume_from:
+                request_headers["Range"] = f"bytes={resume_from}-"
             try:
                 response = requests.get(
-                    self.download_info.download_link,
-                    stream=True,
-                    headers=download_headers,
-                    timeout=30,
+                    self.download_info.download_link, stream=True,
+                    headers=request_headers, timeout=30,
                 )
+                if response.status_code == HTTPStatus.RANGE_NOT_SATISFIABLE and resume_from:
+                    discard_partial(temp_path)
+                    manifest = TransferManifest.plan(
+                        manifest.size, 1, etag=manifest.etag, url_origin=manifest.url_origin,
+                    )
+                    continue
+                if response.status_code in (HTTPStatus.FORBIDDEN, HTTPStatus.UNAUTHORIZED):
+                    fresh = self._refresh_link()
+                    if fresh is not None:
+                        self.download_info.download_link = fresh
+                        continue
                 response.raise_for_status()
-
             except RequestException as req_err:
-                # Exit the loop if not retrying
                 if not self._handle_request_exception(req_err, attempt):
                     break
-
-            else:
-                return save_file_with_progress(
-                    response,
-                    final_path,
-                    self.download_info.task,
-                    self.live_manager,
-                    download_url=self.download_info.download_link,
-                    # Propagate per-job headers so the HEAD probe used for
-                    # unknown-length downloads matches the streaming GET's
-                    # user-agent / referer — otherwise a different CDN
-                    # response can land in the content-length backfill.
-                    download_headers=download_headers,
-                )
-
-        # All retries exhausted — caller decides whether to queue a retry pass.
+                continue
+            if resume_from and response.status_code != HTTPStatus.PARTIAL_CONTENT:
+                # Server ignored our Range: start over so we never mix offsets.
+                response.close()
+                discard_partial(temp_path)
+                manifest.segments[0].done = 0
+                continue
+            return save_file_with_progress(
+                response, final_path, self.download_info.task, self.live_manager,
+                download_url=self.download_info.download_link, download_headers=headers,
+                resume_from=(
+                    resume_from if response.status_code == HTTPStatus.PARTIAL_CONTENT else 0
+                ),
+                manifest=manifest,
+            )
         return DownloadOutcome.RETRYABLE_FAILURE
+
+    def _refresh_link(self) -> str | None:
+        """Re-resolve the signed CDN URL from the item page; ``None`` if impossible."""
+        item_page = self.download_info.item_page
+        if not item_page:
+            return None
+        network = self.session_info.network
+        page_headers = network.headers if network is not None else None
+        try:
+            page = requests.get(item_page, headers=page_headers, timeout=20)
+            page.raise_for_status()
+            soup = BeautifulSoup(page.text, "html.parser")
+            link, _ = asyncio.run(get_download_info(item_page, soup, network=network))
+        except (RequestException, RuntimeError, ValueError):
+            return None
+        if link:
+            self.live_manager.update_log(
+                event="Download progress",
+                details=f"Signed URL expired; re-resolved {self.download_info.filename}.",
+            )
+        return link
 
     def download(self) -> dict | None:
         """Handle the download process."""

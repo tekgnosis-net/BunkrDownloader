@@ -186,7 +186,7 @@ def _emit_progress(
     return estimator
 
 # pylint: disable=too-many-arguments
-def _finalise_download(
+def finalise_download(
     *,
     file_size: int | None,
     total_downloaded: int,
@@ -353,7 +353,7 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
     if manifest is not None:
         save_manifest(manifest, manifest_file)
 
-    return _finalise_download(
+    return finalise_download(
         file_size=file_size,
         total_downloaded=total_downloaded,
         temp_path=temp_download_path,
@@ -362,3 +362,7 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
         task=task,
         manifest_file=manifest_file,
     )
+
+
+# Backwards-compatible alias for existing tests and callers.
+_finalise_download = finalise_download
