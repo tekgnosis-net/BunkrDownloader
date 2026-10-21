@@ -1,0 +1,98 @@
+# tests/unit/test_transfer_manifest.py
+"""Manifest: segment math, atomic round-trip, validation, discard."""
+
+# pylint: disable=missing-function-docstring
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from src.downloaders.transfer_manifest import (
+    MANIFEST_VERSION,
+    TransferManifest,
+    discard_partial,
+    load_manifest,
+    manifest_matches_remote,
+    manifest_path,
+    save_manifest,
+)
+
+
+@pytest.mark.parametrize(("size", "n"), [(10, 4), (1000, 3), (1024 * 1024 + 1, 16), (7, 7), (5, 1)])
+def test_plan_covers_range_exactly_without_gaps_or_overlap(size, n):
+    manifest = TransferManifest.plan(size, n, etag='"e"')
+    segs = manifest.segments
+    assert len(segs) == n
+    assert segs[0].start == 0
+    assert segs[-1].end == size - 1
+    for prev, cur in zip(segs, segs[1:]):
+        assert cur.start == prev.end + 1
+    assert sum(s.length for s in segs) == size
+    assert all(s.done == 0 for s in segs)
+    assert manifest.bytes_done == 0 and not manifest.complete
+
+
+def test_segment_progress_properties():
+    seg = TransferManifest.plan(100, 2, etag=None).segments[1]   # 50..99
+    assert (seg.start, seg.end, seg.length) == (50, 99, 50)
+    seg.done = 20
+    assert seg.remaining == 30 and seg.next_offset == 70 and not seg.complete
+    seg.done = 50
+    assert seg.complete and seg.remaining == 0
+
+
+def test_save_and_load_round_trip_is_atomic(tmp_path: Path):
+    temp = tmp_path / "video.temp"
+    path = manifest_path(temp)
+    assert path == tmp_path / "video.temp.parts"
+    manifest = TransferManifest.plan(1000, 4, etag='"abc"', url_origin="https://bunkr.cr/f/x")
+    manifest.segments[1].done = 120
+    save_manifest(manifest, path)
+    assert not (tmp_path / "video.temp.parts.tmp").exists()
+    loaded = load_manifest(path)
+    assert loaded is not None
+    assert loaded.size == 1000
+    assert loaded.etag == '"abc"'
+    assert loaded.url_origin == "https://bunkr.cr/f/x"
+    assert [s.done for s in loaded.segments] == [0, 120, 0, 0]
+    assert json.loads(path.read_text())["version"] == MANIFEST_VERSION
+
+
+def test_load_rejects_missing_malformed_and_wrong_version(tmp_path: Path):
+    path = tmp_path / "x.temp.parts"
+    assert load_manifest(path) is None
+    path.write_text("{not json")
+    assert load_manifest(path) is None
+    path.write_text(json.dumps({"version": 99, "size": 1, "etag": None, "segments": []}))
+    assert load_manifest(path) is None
+    path.write_text(json.dumps({"version": 1, "size": 1}))       # missing segments
+    assert load_manifest(path) is None
+
+
+def test_manifest_mismatch_on_size():
+    manifest = TransferManifest.plan(1000, 2, etag='"a"')
+    assert manifest_matches_remote(manifest, size=1000, etag='"a"')
+    assert not manifest_matches_remote(manifest, size=1001, etag='"a"')
+    assert not manifest_matches_remote(manifest, size=None, etag='"a"')
+
+
+def test_manifest_etag_rules():
+    manifest = TransferManifest.plan(1000, 2, etag='"a"')
+    # remote has no ETag -> size only
+    assert manifest_matches_remote(manifest, size=1000, etag=None)
+    assert not manifest_matches_remote(manifest, size=1000, etag='"b"')
+    assert manifest_matches_remote(manifest, size=1000, etag='W/"a"')    # weak compares by value
+    no_etag = TransferManifest.plan(1000, 2, etag=None)
+    # local has no ETag -> size only
+    assert manifest_matches_remote(no_etag, size=1000, etag='"zzz"')
+
+
+def test_discard_partial_removes_both_and_ignores_missing(tmp_path: Path):
+    temp = tmp_path / "f.temp"
+    temp.write_bytes(b"xx")
+    manifest_path(temp).write_text("{}")
+    discard_partial(temp)
+    assert not temp.exists() and not manifest_path(temp).exists()
+    discard_partial(temp)   # no raise
