@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## v0.16.0 (2026-10-21)
+
+### Documentation
+
+* docs(readme): release notes for v0.15.0 and v0.14.0 (#30)
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`e575aea`](https://github.com/tekgnosis-net/BunkrDownloader/commit/e575aea1f9be5380089c690b382e417e8afd58b9))
+
+### Feature
+
+* feat(download): close the v0.15.0 follow-ups: sticky sync, ceiling, timeout knobs (#31)
+
+Sticky fdatasync failure, single-stream reset after a failed probe, legacy-temp mtime guard, MAX_TOTAL_CONNECTIONS process-wide ceiling, env knobs for the download HTTP timeouts, deterministic snapshot-before-sync and sticky-sync tests, usePersistentState lazy init, README architecture refresh. ([`c2f50b6`](https://github.com/tekgnosis-net/BunkrDownloader/commit/c2f50b6f1b8120d473773846407e1d363f9eb266))
+
 ## v0.15.0 (2026-10-21)
 
 ### Feature
