@@ -26,6 +26,8 @@ from src.config import (
     DOWNLOAD_HEADERS,
     DownloadInfo,
     HTTPStatus,
+    LINK_REFRESH_MAX,
+    MANIFEST_RESET_MAX,
     MAX_WORKERS,
     SessionInfo,
     TransferSettings,
@@ -60,9 +62,6 @@ from .transfer_manifest import (
 
 if TYPE_CHECKING:
     from src.managers.live_manager import LiveManager
-
-MAX_LINK_REFRESHES = 2
-MAX_MANIFEST_RESETS = 1
 
 
 class MediaDownloader:  # pylint: disable=too-many-instance-attributes
@@ -133,6 +132,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     ),
                 )
                 return None, True
+            discard_partial(temp_path)
             return None, False
         if not manifest_matches_remote(existing, size=remote.size, etag=remote.etag):
             discard_partial(temp_path)
@@ -208,7 +208,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         )
         return self._without_pwrite_fallback(plan)
 
-    def _run_segmented(
+    def _run_segmented(  # pylint: disable=too-many-branches
         self, plan: TransferPlan, temp_path: Path, final_path: str, headers: dict[str, str],
     ) -> DownloadOutcome:
         manifest = plan.manifest
@@ -236,7 +236,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     manifest_file=manifest_path(temp_path),
                 )
             if outcome is SegmentedOutcome.NEEDS_REFRESH:
-                if self._refreshes >= MAX_LINK_REFRESHES:
+                if self._refreshes >= LINK_REFRESH_MAX:
                     return DownloadOutcome.RETRYABLE_FAILURE
                 fresh = self._take_refresh()
                 if fresh is None:
@@ -255,7 +255,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     temp_path, final_path, headers,
                 )
             if outcome is SegmentedOutcome.MANIFEST_INVALID:
-                if self._resets >= MAX_MANIFEST_RESETS:
+                if self._resets >= MANIFEST_RESET_MAX:
                     return DownloadOutcome.TERMINAL_FAILURE
                 self._resets += 1
                 discard_partial(temp_path)
@@ -280,7 +280,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         discard_partial(temp_path)
         manifest.segments[0].done = 0
 
-    def _run_single(  # pylint: disable=too-many-branches,too-many-statements
+    def _run_single(  # pylint: disable=too-many-branches,too-many-statements,too-many-nested-blocks
         self, plan: TransferPlan, temp_path: Path, final_path: str, headers: dict[str, str],
     ) -> DownloadOutcome:
         manifest = plan.manifest
@@ -312,7 +312,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                 )
                 if response.status_code == HTTPStatus.RANGE_NOT_SATISFIABLE and resume_from:
                     response.close()
-                    if self._resets >= MAX_MANIFEST_RESETS:
+                    if self._resets >= MANIFEST_RESET_MAX:
                         return DownloadOutcome.TERMINAL_FAILURE
                     self._resets += 1
                     discard_partial(temp_path)
@@ -320,7 +320,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     continue
                 if response.status_code in (HTTPStatus.FORBIDDEN, HTTPStatus.UNAUTHORIZED):
                     response.close()
-                    if self._refreshes >= MAX_LINK_REFRESHES:
+                    if self._refreshes >= LINK_REFRESH_MAX:
                         return DownloadOutcome.RETRYABLE_FAILURE
                     fresh = self._take_refresh()
                     if fresh is not None:
@@ -328,6 +328,10 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                             fresh, manifest, temp_path, headers,
                         )
                         if replan is not None:
+                            if replan.mode is TransferMode.SEGMENTED:
+                                return self._run_segmented(
+                                    replan, temp_path, final_path, headers,
+                                )
                             manifest = replan.manifest
                         continue
                 response.raise_for_status()
@@ -345,7 +349,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                 or not self._content_range_ok(response, resume_from, manifest.size)
             ):
                 response.close()
-                if self._resets >= MAX_MANIFEST_RESETS:
+                if self._resets >= MANIFEST_RESET_MAX:
                     return DownloadOutcome.TERMINAL_FAILURE
                 self._resets += 1
                 self._drop_single_partial(temp_path, manifest)

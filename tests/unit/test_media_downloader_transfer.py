@@ -13,10 +13,12 @@ from unittest.mock import patch
 
 import requests
 
-from src.config import DownloadInfo, NetworkContext, SessionInfo
+from src.config import (
+    LINK_REFRESH_MAX, DownloadInfo, NetworkContext, SessionInfo, resolve_transfer_settings,
+)
 from src.downloaders.download_utils import DownloadOutcome
 from src.downloaders import media_downloader
-from src.downloaders.media_downloader import MAX_LINK_REFRESHES, MediaDownloader
+from src.downloaders.media_downloader import MediaDownloader
 from src.downloaders.remote_probe import RemoteInfo
 from src.downloaders.segmented_download import SegmentedDownloader, SegmentedOutcome
 from src.downloaders.transfer_manifest import TransferManifest, manifest_path, save_manifest
@@ -185,7 +187,7 @@ def test_refresh_cap_is_bounded(range_server, tmp_path, fake_live_manager):
     with patch.object(dl, "_refresh_link", side_effect=lambda: range_server.url + "?t=x") as refresh, \
             patch("src.downloaders.media_downloader.time.sleep"):
         assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.RETRYABLE_FAILURE
-    assert refresh.call_count == MAX_LINK_REFRESHES
+    assert refresh.call_count == LINK_REFRESH_MAX
 
 
 def test_manifest_invalid_gets_one_restart_even_with_single_retry(range_server, tmp_path, fake_live_manager):
@@ -238,3 +240,48 @@ def test_refresh_link_returns_none_for_page_without_markers(range_server, tmp_pa
     page = SimpleNamespace(text="<html></html>", raise_for_status=lambda: None)
     with patch("src.downloaders.media_downloader.requests.get", return_value=page):
         assert dl._refresh_link() is None
+
+
+def test_single_refresh_hands_off_to_segmented_when_replan_is_segmented(
+    range_server, tmp_path, fake_live_manager,
+):
+    range_server.forbid_from_request = 1
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, min_mb=100,
+             item_page="https://bunkr.cr/f/abc")
+    real_probe = media_downloader.probe_remote
+    probes = []
+
+    def probe(url, headers):
+        probes.append(url)
+        if len(probes) == 1:
+            return real_probe(url, headers)
+        return RemoteInfo(len(range_server.data), '"new-etag"', True)
+
+    def fake_refresh():
+        range_server.forbid_from_request = None
+        return range_server.url + "?token=fresh"
+    # The re-plan must be segmented: lower the threshold after the first (single) plan.
+    real_replan = dl._replan_after_refresh
+
+    def replan(*args, **kwargs):
+        dl._settings = resolve_transfer_settings(Namespace(
+            segments=4, segment_min_size_mb=1, max_connections=12, partial_max_age_hours=0))
+        return real_replan(*args, **kwargs)
+    final = tmp_path / "file.bin"
+    with patch.object(dl, "_refresh_link", side_effect=fake_refresh), \
+            patch.object(dl, "_replan_after_refresh", side_effect=replan), \
+            patch("src.downloaders.media_downloader.probe_remote", side_effect=probe), \
+            patch.object(dl, "_run_segmented", wraps=dl._run_segmented) as seg:
+        assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
+    seg.assert_called_once()
+    assert _sha(final.read_bytes()) == _sha(range_server.data)
+
+
+def test_zero_progress_manifest_with_unknown_probe_is_dropped(range_server, tmp_path, fake_live_manager):
+    final, temp = _seed_single(range_server, tmp_path, done=0, temp_bytes=0)
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, min_mb=100)
+    with patch("src.downloaders.media_downloader.probe_remote",
+               return_value=RemoteInfo(None, None, False)):
+        assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
+    assert _sha(final.read_bytes()) == _sha(range_server.data)
+    assert not manifest_path(temp).exists()

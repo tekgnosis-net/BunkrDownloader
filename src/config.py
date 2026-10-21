@@ -175,6 +175,10 @@ SEGMENT_MIN_FILE_SIZE_MB = _env_int_clamped("SEGMENT_MIN_FILE_SIZE_MB", 32, 1, 4
 MAX_CONCURRENT_CONNECTIONS = _env_int_clamped("MAX_CONCURRENT_CONNECTIONS", 12, 1, 64)
 # Abandoned .temp/.temp.parts older than this are deleted at job start; 0 disables.
 PARTIAL_MAX_AGE_HOURS = _env_int_clamped("PARTIAL_MAX_AGE_HOURS", 168, 0, 8760)
+# Max signed-URL re-resolutions per file attempt.
+LINK_REFRESH_MAX = _env_int_clamped("LINK_REFRESH_MAX", 2, 0, 10)
+# Max discard-and-restart cycles per file attempt.
+MANIFEST_RESET_MAX = _env_int_clamped("MANIFEST_RESET_MAX", 1, 0, 5)
 
 _TRANSFER_CLAMPS: dict[str, tuple[int, int]] = {
     "segments": (1, 16),

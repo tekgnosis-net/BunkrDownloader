@@ -27,11 +27,20 @@ def _reload_config():
         ({"MAX_CONCURRENT_CONNECTIONS": "1000"}, "MAX_CONCURRENT_CONNECTIONS", 64),
         ({}, "PARTIAL_MAX_AGE_HOURS", 168),
         ({"PARTIAL_MAX_AGE_HOURS": "0"}, "PARTIAL_MAX_AGE_HOURS", 0),
+        ({}, "LINK_REFRESH_MAX", 2),
+        ({"LINK_REFRESH_MAX": "99"}, "LINK_REFRESH_MAX", 10),
+        ({"LINK_REFRESH_MAX": "-3"}, "LINK_REFRESH_MAX", 0),
+        ({"LINK_REFRESH_MAX": "many"}, "LINK_REFRESH_MAX", 2),
+        ({}, "MANIFEST_RESET_MAX", 1),
+        ({"MANIFEST_RESET_MAX": "99"}, "MANIFEST_RESET_MAX", 5),
+        ({"MANIFEST_RESET_MAX": "-1"}, "MANIFEST_RESET_MAX", 0),
+        ({"MANIFEST_RESET_MAX": "junk"}, "MANIFEST_RESET_MAX", 1),
     ],
 )
 def test_transfer_knobs_env_default_and_clamp(monkeypatch, env, attr, expected):
     for name in ("DOWNLOAD_SEGMENTS", "SEGMENT_MIN_FILE_SIZE_MB",
-                 "MAX_CONCURRENT_CONNECTIONS", "PARTIAL_MAX_AGE_HOURS"):
+                 "MAX_CONCURRENT_CONNECTIONS", "PARTIAL_MAX_AGE_HOURS",
+                 "LINK_REFRESH_MAX", "MANIFEST_RESET_MAX"):
         monkeypatch.delenv(name, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
