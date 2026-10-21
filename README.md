@@ -42,6 +42,18 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 ## Latest Release Updates
 
+**v0.15.0** — October 2026
+
+- **Segmented downloads**: large files are fetched by several range workers at once (default `DOWNLOAD_SEGMENTS=4`, files under `SEGMENT_MIN_FILE_SIZE_MB=32` stay single-stream). Each job has its own connection cap (`MAX_CONCURRENT_CONNECTIONS`, default `12`).
+- **Resume across runs and restarts**: progress lives in a `<name>.temp.parts` manifest next to the `<name>.temp` partial, written only after the data is synced to disk. A killed container, a Ctrl-C, a web *Cancel* or a dropped connection all leave a partial that the next attempt validates against the remote size/ETag and continues from, for segmented and single-stream transfers alike.
+- **Self-heal with caps**: an expired signed URL (401/403 mid-transfer) is re-resolved from the item page up to `LINK_REFRESH_MAX` times; a manifest that no longer matches the remote is reset up to `MANIFEST_RESET_MAX` times. Partials older than `PARTIAL_MAX_AGE_HOURS` (default 168) are swept at job start.
+- **Transfer settings in the dashboard**: all six knobs sit in a new *Transfer* card in Settings, seeded from the server's env defaults once per browser and sent per job. They are also CLI flags (`--segments`, `--segment-min-size-mb`, `--max-connections`, `--partial-max-age-hours`, `--link-refresh-max`, `--manifest-reset-max`).
+- **Prompt cancel**: web cancel and CLI Ctrl-C now stop the download workers themselves instead of only unwinding the job, so the partial on disk is resumable rather than half-finished.
+
+**v0.14.0** — October 2026
+
+- **Dashboard re-attaches to the running job**: downloads are server-side tasks that keep going when the tab is closed. On load the UI now finds the newest pending or running job and reconnects to its event stream, replaying progress and logs from the start.
+
 **v0.13.3** — October 2026
 
 - **Dependency maintenance**: cleared all 21 open frontend Dependabot alerts. axios 1.16.1 → 1.20.0 (the only flagged package shipped in the browser bundle) plus patched build-toolchain versions of vite, esbuild, postcss, @babel/core, browserslist, source-map-js, baseline-browser-mapping, form-data and follow-redirects. `npm audit` reports zero vulnerabilities; no behaviour changes.
