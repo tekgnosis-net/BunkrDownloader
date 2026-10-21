@@ -126,6 +126,7 @@ React 18 + TypeScript + Chakra UI 2 + Zustand, built by Vite 7. Entry `src/main.
 - `lib/store.ts` — the single Zustand store for the job view. Tasks live in a `Map` mutated in place and bumped once per `applyEvents` batch; rows subscribe to their own slice so a 200-file album doesn't re-render everything on every progress tick. Keep that pattern when adding state.
 - `lib/connection.ts` — `JobConnection`, the deterministic WS-over-polling state machine. Invariants: exactly one of WS / poll is active at a time; the cursor advances only from server-stamped ids; every envelope passes through a `Set<number>` dedup (LRU-capped); a 410 from `/events` resets the whole view; after 5 failed WS attempts (exp. backoff, 15s cap) it falls back to 2s polling and re-tries WS every ~60s. Do not add a second code path that also feeds the store.
 - `hooks/` — `useActiveJob`, `usePersistentState` (localStorage), `useThemePreference`.
+- On mount `App.tsx` queries `/api/downloads` and re-attaches to the newest `pending`/`running` job (jobs are server tasks and outlive the tab). It only calls `setJob`; the replay-from-zero is the normal `JobConnection` path, so don't add a second bootstrap.
 - `components/` — `shell/` (AppShell, TopBar, ConnectionIndicator), `download/` (form, overall progress, task list/rows, directory picker), `logs/LogPane`, `settings/SettingsPanel`, `primitives/` (Surface, GlassProgress, StatusPill).
 - `theme/` — OKLCH token set (`tokens.ts`), `ThemeProvider` with Auto/Light/Dark, `globals.css`. CSS modules under `styles/`.
 
