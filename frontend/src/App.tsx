@@ -143,7 +143,6 @@ export default function App() {
         }
         setSettings((prev) => ({
           ...prev,
-          maxWorkers: d.max_workers ?? prev.maxWorkers,
           segments: d.segments ?? prev.segments,
           segmentMinSizeMb: d.segment_min_size_mb ?? prev.segmentMinSizeMb,
           maxConnections: d.max_connections ?? prev.maxConnections,
