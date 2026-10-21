@@ -37,9 +37,12 @@ from src.config import (
     JOB_EVENT_RETENTION,
     JOB_REAPER_INTERVAL_SECONDS,
     JOB_TTL_HOURS,
+    LINK_REFRESH_MAX,
+    MANIFEST_RESET_MAX,
     MAX_WORKERS,
     build_network_context,
     get_network_settings,
+    resolve_transfer_settings,
 )
 from src.file_utils import PathOutsideSandboxError, resolve_within_allowed_root
 from src.web.update_check import get_update_status
@@ -105,6 +108,22 @@ class DownloadRequest(BaseModel):
         ge=1,
         le=10,
         description="Maximum concurrent album downloads to run.",
+    )
+    segments: int | None = Field(
+        default=None, ge=1, le=16,
+        description="Parallel byte ranges per file; omit to use the server default.",
+    )
+    segment_min_size_mb: int | None = Field(
+        default=None, ge=1, le=4096,
+        description="Files below this size use a single stream.",
+    )
+    max_connections: int | None = Field(
+        default=None, ge=1, le=64,
+        description="Process-wide cap on simultaneous download connections.",
+    )
+    partial_max_age_hours: int | None = Field(
+        default=None, ge=0, le=8760,
+        description="Delete abandoned partials older than this; 0 disables.",
     )
     network: NetworkOverrides | None = Field(
         default=None,
@@ -650,6 +669,10 @@ def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
         disable_disk_check=request.disable_disk_check,
         log_level=request.log_level,
         max_workers=request.max_workers,
+        segments=request.segments,
+        segment_min_size_mb=request.segment_min_size_mb,
+        max_connections=request.max_connections,
+        partial_max_age_hours=request.partial_max_age_hours,
         status_page=request.network.status_page if request.network else None,
         bunkr_api=request.network.api_endpoint if request.network else None,
         download_referer=request.network.download_referer if request.network else None,
@@ -820,10 +843,22 @@ app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 
 @app.get("/api/settings/defaults")
-async def get_settings_defaults() -> dict[str, dict[str, str]]:
-    """Return default settings so the frontend can mirror server configuration."""
+async def get_settings_defaults() -> dict[str, dict[str, Any]]:
+    """Return server-resolved defaults (built-in < env) so the UI can seed its settings."""
 
-    return {"network": get_network_settings()}
+    transfer = resolve_transfer_settings(None)
+    return {
+        "network": get_network_settings(),
+        "download": {
+            "max_workers": MAX_WORKERS,
+            "segments": transfer.segments,
+            "segment_min_size_mb": transfer.segment_min_bytes // (1024 * 1024),
+            "max_connections": transfer.max_connections,
+            "partial_max_age_hours": transfer.partial_max_age_hours,
+            "link_refresh_max": LINK_REFRESH_MAX,
+            "manifest_reset_max": MANIFEST_RESET_MAX,
+        },
+    }
 
 
 @app.post("/api/downloads", response_model=DownloadResponse)
