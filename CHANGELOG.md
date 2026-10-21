@@ -1,5 +1,52 @@
 # CHANGELOG
 
+## v0.13.3 (2026-10-21)
+
+### Documentation
+
+* docs: refresh CLAUDE.md and track it in git (#25)
+
+* docs: refresh CLAUDE.md and track it in git
+
+Rewrite the project CLAUDE.md so it matches the current tree: the
+TypeScript/Zustand frontend (store, JobConnection state machine, events
+mirror), the completed PR2 memory bounds (ring buffer, 410 Gone, reaper),
+the bearer-auth / path-sandbox / CORS layer, the signed-URL crawler flow
+that replaced /api/vs, the update checker, and the semantic-release
+version gotcha (pyproject stays at 0.3.3; APP_VERSION build-arg is
+authoritative). Also record .gitignore&#39;s lib/ and logs/ negation trap
+and the local tooling artifacts that must never be staged.
+
+Remove CLAUDE.md from .gitignore so the guidance is versioned with the
+code it describes.
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE
+
+* docs(claude): point at the VPN compose variant
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE
+
+* docs(claude): note item-page maintenance signal and new env knobs
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`c7db3b1`](https://github.com/tekgnosis-net/BunkrDownloader/commit/c7db3b10336b34ad666ace285dc92ba24ec9d1e7))
+
+* docs(readme): add v0.13.0–v0.13.2 to Latest Release Updates (#24)
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`56d2563`](https://github.com/tekgnosis-net/BunkrDownloader/commit/56d2563bc6afabdac7cd07f91a38ef198ce5cffa))
+
+### Fix
+
+* fix(deps): clear 21 frontend Dependabot alerts (#26)
+
+Bump axios 1.16.1 -&gt; 1.20.0 (the only flagged package shipped in the
+browser bundle; 1 high + 8 medium advisories), vite 7.3.2 -&gt; 7.3.7 and
+esbuild 0.25.9 -&gt; 0.28.2, and refresh the transitive build-toolchain
+packages (postcss, @babel/core, browserslist, source-map-js,
+baseline-browser-mapping, form-data, follow-redirects) to their patched
+versions. npm audit now reports 0 vulnerabilities.
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`b6f2149`](https://github.com/tekgnosis-net/BunkrDownloader/commit/b6f2149ae5cff172342edd071b909c15cf517e45))
+
 ## v0.13.2 (2026-09-14)
 
 ### Fix
