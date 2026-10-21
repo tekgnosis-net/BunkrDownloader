@@ -139,11 +139,13 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
             self._prepare_file()
         except OSError as os_err:
             logging.warning("Cannot prepare %s: %s", self.temp_path, os_err)
+            self._close_fd()
             return SegmentedOutcome.TERMINAL
 
         pending = [s for s in self.manifest.segments if not s.complete]
         if not pending:
             self._flush()
+            self._close_fd()
             return SegmentedOutcome.COMPLETE
 
         outcome = SegmentedOutcome.COMPLETE
@@ -161,9 +163,7 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
                             self.cancel_event.set()
         finally:
             self._flush()
-            if self._fd is not None:
-                os.close(self._fd)
-                self._fd = None
+            self._close_fd()
 
         if outcome is SegmentedOutcome.COMPLETE and not self.manifest.complete:
             return SegmentedOutcome.RETRYABLE
@@ -174,6 +174,11 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         return outcome
 
     # ---- internals ----------------------------------------------------------
+
+    def _close_fd(self) -> None:
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
 
     def _prepare_file(self) -> None:
         flags = os.O_RDWR | os.O_CREAT
