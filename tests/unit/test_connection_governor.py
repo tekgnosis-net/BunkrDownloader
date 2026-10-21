@@ -67,3 +67,38 @@ def test_slot_wait_wakes_on_stop_event():
         stop.set()
         thread.join(timeout=2)
     assert raised == [True] and gov.in_flight == 0
+
+
+def test_parent_slot_caps_across_children():
+    ceiling = ConnectionGovernor(2)
+    jobs = [ConnectionGovernor(4, parent=ceiling) for _ in range(2)]
+    peak = 0
+    lock = threading.Lock()
+
+    def worker(gov):
+        nonlocal peak
+        with gov.slot():
+            with lock:
+                peak = max(peak, ceiling.in_flight)
+            time.sleep(0.05)
+
+    threads = [threading.Thread(target=worker, args=(jobs[i % 2],)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak == 2 and ceiling.in_flight == 0
+    assert all(gov.in_flight == 0 for gov in jobs)
+    assert jobs[0].parent is ceiling
+
+
+def test_parent_wait_honours_cancel():
+    ceiling = ConnectionGovernor(1)
+    child = ConnectionGovernor(4, parent=ceiling)
+    cancel = threading.Event()
+    with ceiling.slot():
+        cancel.set()
+        with pytest.raises(Cancelled):
+            with child.slot(cancel_event=cancel):
+                pass
+    assert child.in_flight == 0 and ceiling.in_flight == 0

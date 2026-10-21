@@ -181,6 +181,10 @@ LINK_REFRESH_MAX = _env_int_clamped("LINK_REFRESH_MAX", 2, 0, 10)
 # Max discard-and-restart cycles per file attempt.
 MANIFEST_RESET_MAX = _env_int_clamped("MANIFEST_RESET_MAX", 1, 0, 5)
 
+# Optional process-wide ceiling on simultaneous streaming GETs across all
+# jobs (0 = none; every job keeps its own per-job cap either way).
+MAX_TOTAL_CONNECTIONS = _env_int_clamped("MAX_TOTAL_CONNECTIONS", 0, 0, 256)
+
 # HTTP timeouts on the download side (seconds). These describe the network
 # the container sits on rather than a download, so they are env-only.
 # HEAD probes: the size/ETag probe before each file and the content-length backfill.
