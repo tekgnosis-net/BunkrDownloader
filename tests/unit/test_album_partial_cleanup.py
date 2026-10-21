@@ -37,6 +37,28 @@ def test_cleanup_removes_only_old_pairs(tmp_path: Path):
     assert fresh.exists() and (tmp_path / "b.temp.parts").exists() and legacy.exists()
 
 
+def test_cleanup_tolerates_unlink_permission_error(tmp_path: Path, monkeypatch):
+    blocked = tmp_path / "a.temp"
+    blocked.write_bytes(b"x")
+    (tmp_path / "a.temp.parts").write_text("{}")
+    ok = tmp_path / "b.temp"
+    ok.write_bytes(b"x")
+    (tmp_path / "b.temp.parts").write_text("{}")
+    for path in (blocked, tmp_path / "a.temp.parts", ok, tmp_path / "b.temp.parts"):
+        _old(path, 200)
+    real_unlink = Path.unlink
+
+    def fake_unlink(self, *args, **kwargs):
+        if self.name == "a.temp":
+            raise PermissionError(13, "Permission denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+    removed = cleanup_stale_partials(tmp_path, 168)
+    assert removed == [ok]
+    assert blocked.exists() and not ok.exists() and not (tmp_path / "b.temp.parts").exists()
+
+
 def test_cleanup_disabled_with_zero(tmp_path: Path):
     old = tmp_path / "a.temp"
     old.write_bytes(b"x")

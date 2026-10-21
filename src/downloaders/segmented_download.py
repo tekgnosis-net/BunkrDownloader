@@ -337,10 +337,19 @@ def cleanup_stale_partials(
             continue
         if newest >= cutoff:
             continue
-        for path in (temp, parts):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
+        if not _unlink_quietly(temp) or not _unlink_quietly(parts):
+            continue
         removed.append(temp)
     return removed
+
+
+def _unlink_quietly(path: Path) -> bool:
+    """Remove ``path``; True when it is gone afterwards, False on any other OSError."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return True
+    except OSError as err:
+        logging.debug("Could not remove stale partial %s: %s", path, err)
+        return False
+    return True
