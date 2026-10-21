@@ -1,5 +1,33 @@
 # CHANGELOG
 
+## v0.14.0 (2026-10-21)
+
+### Documentation
+
+* docs(readme): add v0.13.3 to Latest Release Updates (#27)
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`984833d`](https://github.com/tekgnosis-net/BunkrDownloader/commit/984833d21fb4a36fd4bb02bbb66f75802e75826b))
+
+### Feature
+
+* feat(web): re-attach to a running job when the dashboard is reopened (#28)
+
+Download jobs are server-side tasks and keep running after the tab is
+closed, but the page kept the active job id only in memory, so reopening
+the dashboard showed an empty form while the job carried on invisibly.
+
+On mount, query /api/downloads, pick the newest pending/running job and
+make it the active job. The existing JobConnection then opens the socket,
+sees its cursor at zero against the hello frame, backfills the retained
+history over HTTP and continues live — task rows, overall progress and
+the log pane rebuild from the replay. A toast names the re-attached job.
+
+Verified against a local backend: a job started with no browser attached
+appears on a fresh page with Live (WebSocket), the overall counter, the
+per-file rows and log entries from before the page was opened.
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`401a8a6`](https://github.com/tekgnosis-net/BunkrDownloader/commit/401a8a66fbf7e98ddaff575e932eb1a81218f863))
+
 ## v0.13.3 (2026-10-21)
 
 ### Documentation
