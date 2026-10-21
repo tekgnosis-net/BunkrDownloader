@@ -174,6 +174,10 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         self.last_error: RequestException | None = None
         self.last_os_error: OSError | None = None
         self._last_pct: float | None = None
+        # Latched by the first failed fdatasync: from then on no manifest is
+        # saved, because a later successful sync says nothing about the bytes
+        # whose writeback already failed.
+        self._sync_failed = False
 
     # ---- public -----------------------------------------------------------
 
@@ -287,14 +291,22 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         was ``pwrite``-n before the capture, so the ``fdatasync`` that follows
         covers them. No lock is held across the sync (it can take seconds on
         a NAS). An ``OSError`` from the sync or the save propagates: callers
-        treat it as a flush failure.
+        treat it as a flush failure. A failed sync is sticky: every later
+        flush fails too, so the manifest on disk never claims bytes whose
+        writeback was reported lost.
         """
+        if self._sync_failed:
+            raise OSError(errno.EIO, "an earlier fdatasync failed; manifest no longer trusted")
         with self._lock:
             self._generation += 1
             generation = self._generation
             snapshot = self.manifest.snapshot()
         if self._fd is not None:
-            sync_data(self._fd)
+            try:
+                sync_data(self._fd)
+            except OSError:
+                self._sync_failed = True
+                raise
         with self._save_order:
             if generation < self._saved_generation:
                 return

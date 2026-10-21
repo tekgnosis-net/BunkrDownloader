@@ -148,11 +148,13 @@ def _remove_quietly(path: Path | None) -> None:
         logging.debug("Could not remove %s: %s", path, err)
 
 
-def _persist_manifest(file: IO[bytes], manifest: TransferManifest, path: Path) -> None:
+def _persist_manifest(file: IO[bytes], manifest: TransferManifest, path: Path) -> bool:
     """Make every byte written so far durable, then record it in the manifest.
 
-    Best effort: an ``OSError`` is logged at debug level and the stream goes
-    on (a failed sync skips the save, so the manifest never over-claims).
+    Returns False when the sync or the save failed; the manifest on disk is
+    then older than the data (never the other way round). The caller treats
+    the first failure as terminal: a later successful sync would not cover
+    the bytes whose writeback was reported lost.
     """
 
     try:
@@ -160,7 +162,21 @@ def _persist_manifest(file: IO[bytes], manifest: TransferManifest, path: Path) -
         sync_data(file.fileno())
         save_manifest(manifest, path)
     except OSError as err:
-        logging.debug("Could not persist manifest %s: %s", path, err)
+        logging.warning("Could not persist manifest %s: %s", path, err)
+        return False
+    return True
+
+
+def _sync_failed(
+    progress_manager: ProgressManager, task: int, download_path: str,
+) -> DownloadOutcome:
+    """Report a failed data sync: the partial is kept, the file is not retried now."""
+    _log_once(
+        progress_manager,
+        f"Cannot sync {download_path} to disk; keeping the partial for a later run.",
+    )
+    progress_manager.update_task(task, completed=0, visible=False)
+    return DownloadOutcome.TERMINAL_FAILURE
 
 
 class _ProgressEstimator:  # pylint: disable=too-few-public-methods
@@ -327,7 +343,8 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
                     if manifest is not None:
                         manifest.segments[0].done = total_downloaded
                         if since_flush >= MANIFEST_FLUSH_BYTES:
-                            _persist_manifest(file, manifest, manifest_file)
+                            if not _persist_manifest(file, manifest, manifest_file):
+                                return _sync_failed(progress_manager, task, download_path)
                             since_flush = 0
                     estimator = _emit_progress(
                         progress_manager,
@@ -360,8 +377,8 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
                 progress_manager.update_task(task, completed=0, visible=False)
                 return DownloadOutcome.RETRYABLE_FAILURE
 
-            if manifest is not None:
-                _persist_manifest(file, manifest, manifest_file)
+            if manifest is not None and not _persist_manifest(file, manifest, manifest_file):
+                return _sync_failed(progress_manager, task, download_path)
 
     finally:
         if head_executor:
