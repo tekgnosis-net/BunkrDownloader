@@ -40,7 +40,10 @@ class FakeResponse:  # pylint: disable=too-few-public-methods
     def iter_content(self, chunk_size: int | None = None):
         """Stream pre-set chunks, then optionally raise to simulate a mid-stream error."""
         del chunk_size
-        yield from self._chunks
+        for chunk in self._chunks:
+            if isinstance(chunk, Exception):
+                raise chunk
+            yield chunk
         if self._raises:
             raise self._raises("simulated mid-stream failure")
 
@@ -161,3 +164,46 @@ def test_finalise_download_outcome_matrix(
         task=0,
     )
     assert outcome is expected
+
+
+def test_save_file_resumes_from_offset_and_updates_manifest(tmp_path, fake_live_manager):
+    """A 206 continuation writes at the offset and removes the manifest on success."""
+    # pylint: disable-next=import-outside-toplevel
+    from src.downloaders.transfer_manifest import TransferManifest, manifest_path
+
+    final = tmp_path / "f.bin"
+    temp = final.with_suffix(".temp")
+    temp.write_bytes(b"A" * 10 + b"\0" * 10)           # 10 good bytes, pre-sized to 20
+    manifest = TransferManifest.plan(20, 1, etag=None)
+    manifest.segments[0].done = 10
+    response = FakeResponse(
+        chunks=[b"B" * 5, b"B" * 5], headers={"Content-Length": "10"},
+    )
+    outcome = save_file_with_progress(
+        response, str(final), 0, fake_live_manager,
+        resume_from=10, manifest=manifest,
+    )
+    assert outcome is DownloadOutcome.SUCCESS
+    assert final.read_bytes() == b"A" * 10 + b"B" * 10
+    assert not manifest_path(temp).exists()            # removed on success
+
+
+def test_save_file_partial_keeps_manifest_progress(tmp_path, fake_live_manager):
+    """An interrupted stream persists its byte count for the next attempt."""
+    # pylint: disable-next=import-outside-toplevel
+    from src.downloaders.transfer_manifest import (
+        TransferManifest, load_manifest, manifest_path,
+    )
+
+    final = tmp_path / "g.bin"
+    temp = final.with_suffix(".temp")
+    manifest = TransferManifest.plan(30, 1, etag='"e"')
+    response = FakeResponse(
+        chunks=[b"x" * 10, ChunkedEncodingError("cut")],
+        headers={"Content-Length": "30"},
+    )
+    outcome = save_file_with_progress(response, str(final), 0, fake_live_manager, manifest=manifest)
+    assert outcome is DownloadOutcome.RETRYABLE_FAILURE
+    saved = load_manifest(manifest_path(temp))
+    assert saved is not None and saved.segments[0].done == 10
+    assert temp.exists()

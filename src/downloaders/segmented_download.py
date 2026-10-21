@@ -22,11 +22,9 @@ from src.config import HTTPStatus, TransferSettings
 from src.managers.progress_manager import ProgressManager
 
 from .connection_governor import GOVERNOR, Cancelled, ConnectionGovernor
-from .download_utils import get_chunk_size
+from .download_utils import MANIFEST_FLUSH_BYTES, get_chunk_size
 from .remote_probe import RemoteInfo
 from .transfer_manifest import Segment, TransferManifest, manifest_path, save_manifest
-
-MANIFEST_FLUSH_BYTES = 8 * 1024 * 1024
 
 
 class TransferMode(Enum):

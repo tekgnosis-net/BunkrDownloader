@@ -17,7 +17,10 @@ from requests.exceptions import ChunkedEncodingError, RequestException
 from src.config import DOWNLOAD_HEADERS, LARGE_FILE_CHUNK_SIZE, THRESHOLDS
 from src.managers.progress_manager import ProgressManager
 
+from .transfer_manifest import TransferManifest, manifest_path, save_manifest
+
 DEFAULT_UNKNOWN_SIZE_BASELINE = 50 * 1024 * 1024
+MANIFEST_FLUSH_BYTES = 8 * 1024 * 1024
 
 
 class DownloadOutcome(IntEnum):
@@ -124,6 +127,17 @@ def _log_once(progress_manager: ProgressManager, message: str) -> None:
         update_log(event="Download progress", details=message)
 
 
+def _remove_quietly(path: Path | None) -> None:
+    """Delete ``path`` if given; a missing file is fine."""
+
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 class _ProgressEstimator:  # pylint: disable=too-few-public-methods
     """Track a rolling progress estimate when file size is unknown."""
 
@@ -180,6 +194,7 @@ def _finalise_download(
     final_path: str,
     progress_manager: ProgressManager,
     task: int,
+    manifest_file: Path | None = None,
 ) -> DownloadOutcome:
     """Rename the in-flight file if possible and report completion.
 
@@ -203,6 +218,7 @@ def _finalise_download(
             _log_once(progress_manager, f"Could not finalise {final_path}: {os_err}")
             progress_manager.update_task(task, completed=0, visible=False)
             return DownloadOutcome.RETRYABLE_FAILURE
+        _remove_quietly(manifest_file)
         progress_manager.update_task(task, completed=100)
         return DownloadOutcome.SUCCESS
 
@@ -212,12 +228,13 @@ def _finalise_download(
         _log_once(progress_manager, f"Could not finalise {final_path}: {os_err}")
         progress_manager.update_task(task, completed=0, visible=False)
         return DownloadOutcome.RETRYABLE_FAILURE
+    _remove_quietly(manifest_file)
     progress_manager.update_task(task, completed=100)
     return DownloadOutcome.SUCCESS
 # pylint: enable=too-many-arguments
 
 
-def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-arguments
+def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-arguments,too-many-branches,too-many-statements
     response: Response,
     download_path: str,
     task: int,
@@ -225,6 +242,8 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
     *,
     download_url: str | None = None,
     download_headers: dict[str, str] | None = None,
+    resume_from: int = 0,
+    manifest: TransferManifest | None = None,
 ) -> DownloadOutcome:
     """Save the file from the response to the specified path.
 
@@ -235,10 +254,19 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
     to the HEAD probe so the content-length backfill uses the same user-agent
     and referer as the streaming GET — otherwise per-job ``NetworkContext``
     overrides would be silently ignored for unknown-length files.
+
+    ``resume_from`` > 0 means the caller issued a Range GET and the first
+    ``resume_from`` bytes are already in the ``.temp`` file; writing continues
+    at that offset. ``manifest`` (single-segment) is kept in step with the
+    byte count so an interrupted stream can resume on the next attempt.
     """
     file_size, head_future, head_executor = _resolve_content_length(
         response, download_url, headers=download_headers,
     )
+    if file_size is not None and resume_from:
+        file_size += resume_from  # Content-Length of a 206 is the remainder
+    if manifest is not None:
+        file_size = manifest.size
     if file_size is None:
         logging.warning("Content length unavailable for %s", download_path)
         _log_once(
@@ -248,8 +276,10 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
 
     # Initialize a temporary download path with the .temp extension
     temp_download_path = Path(download_path).with_suffix(".temp")
+    manifest_file = manifest_path(temp_download_path) if manifest is not None else None
     chunk_size = get_chunk_size(file_size or 0)
-    total_downloaded = 0
+    total_downloaded = resume_from
+    since_flush = 0
     estimator = (
         _ProgressEstimator(float(DEFAULT_UNKNOWN_SIZE_BASELINE))
         if file_size is None
@@ -257,11 +287,19 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
     )
 
     try:
-        with temp_download_path.open("wb") as file:
+        with temp_download_path.open("r+b" if resume_from else "wb") as file:
+            if resume_from:
+                file.seek(resume_from)
             for chunk in response.iter_content(chunk_size=chunk_size):
                 if chunk is not None:
                     file.write(chunk)
                     total_downloaded += len(chunk)
+                    since_flush += len(chunk)
+                    if manifest is not None:
+                        manifest.segments[0].done = total_downloaded
+                        if since_flush >= MANIFEST_FLUSH_BYTES:
+                            save_manifest(manifest, manifest_file)
+                            since_flush = 0
                     estimator = _emit_progress(
                         progress_manager,
                         task,
@@ -288,6 +326,8 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
     # otherwise sit frozen at its last estimate — hide it and log so retry
     # bookkeeping can reactivate it on the next attempt.
     except ChunkedEncodingError:
+        if manifest is not None:
+            save_manifest(manifest, manifest_file)
         _log_once(
             progress_manager,
             f"Partial transfer for {download_path}; the stream ended mid-chunk.",
@@ -310,6 +350,9 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
         if head_length:
             file_size = head_length
 
+    if manifest is not None:
+        save_manifest(manifest, manifest_file)
+
     return _finalise_download(
         file_size=file_size,
         total_downloaded=total_downloaded,
@@ -317,4 +360,5 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
         final_path=download_path,
         progress_manager=progress_manager,
         task=task,
+        manifest_file=manifest_file,
     )
