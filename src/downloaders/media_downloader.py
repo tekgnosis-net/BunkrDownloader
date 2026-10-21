@@ -64,6 +64,14 @@ if TYPE_CHECKING:
     from src.managers.live_manager import LiveManager
 
 
+def _file_size(path: Path) -> int:
+    """Size of ``path`` in bytes, or -1 when it cannot be read."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return -1
+
+
 class _SingleVerdict(Enum):
     """What to do with the response to a single-stream GET."""
 
@@ -124,19 +132,27 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         remote = probe_remote(self.download_info.download_link, headers)
         existing, remote = self._validate_existing(temp_path, remote)
         self._remote = remote
-        plan = plan_transfer(
+        plan = self._without_pwrite_fallback(plan_transfer(
             remote, settings, existing=existing, url_origin=self.download_info.item_page,
-        )
-        if existing is not None and existing.bytes_done:
+        ))
+        if plan.mode is TransferMode.SINGLE_NO_RESUME and manifest_path(temp_path).exists():
+            # Nothing can resume (no size or no Range support): a leftover
+            # manifest would only outlive the file and mislead a later run.
+            discard_partial(temp_path)
+        elif existing is not None and plan.manifest is existing and existing.bytes_done:
             pct = existing.bytes_done * 100 // max(existing.size, 1)
             self.live_manager.update_log(
                 event="Download progress",
                 details=f"Resuming {self.download_info.filename}: {pct}% already on disk.",
             )
-        plan = self._without_pwrite_fallback(plan)
         if plan.mode is TransferMode.SEGMENTED:
-            return self._run_segmented(plan, temp_path, final_path, headers)
-        return self._run_single(plan, temp_path, final_path, headers)
+            outcome = self._run_segmented(plan, temp_path, final_path, headers)
+        else:
+            outcome = self._run_single(plan, temp_path, final_path, headers)
+        if outcome is not DownloadOutcome.SUCCESS:
+            # Never leave a row frozen at its last percentage; a retry re-shows it.
+            self.live_manager.update_task(self.download_info.task, completed=0, visible=False)
+        return outcome
 
     @staticmethod
     def _drop_legacy_temp(final_path: str | Path, temp_path: Path) -> None:
@@ -224,6 +240,40 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         etag = remote.etag if remote is not None and remote.size is not None else fallback.etag
         return TransferManifest.plan(size, count, etag=etag, url_origin=fallback.url_origin)
 
+    def _reset_or_give_up(self, temp_path: Path) -> bool:
+        """Discard an invalid partial; True to restart from 0, False once the cap is spent.
+
+        The partial is discarded either way, so a later run starts clean.
+        """
+        name = self.download_info.filename
+        discard_partial(temp_path)
+        if self._resets >= self._caps().manifest_reset_max:
+            self.live_manager.update_log(
+                event="Download error",
+                details=(
+                    f"Giving up on {name}: the on-disk partial was still invalid after "
+                    f"{self._resets} restart(s); it has been discarded."
+                ),
+            )
+            return False
+        self._resets += 1
+        self.live_manager.update_log(
+            event="Download progress",
+            details=f"Restarting {name} from 0: on-disk partial invalid.",
+        )
+        return True
+
+    def _refreshes_exhausted(self) -> DownloadOutcome:
+        """Log that the link-refresh budget is spent; the file is retryable later."""
+        self.live_manager.update_log(
+            event="Download progress",
+            details=(
+                f"Gave up re-resolving {self.download_info.filename} after "
+                f"{self._refreshes} refreshes."
+            ),
+        )
+        return DownloadOutcome.RETRYABLE_FAILURE
+
     def _take_refresh(self) -> str | None:
         """Spend one link refresh; back off before every refresh after the first."""
         if self._refreshes and not self._pause(3 + random.uniform(1, 3)):  # noqa: S311
@@ -291,7 +341,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                 )
             if outcome is SegmentedOutcome.NEEDS_REFRESH:
                 if self._refreshes >= self._caps().link_refresh_max:
-                    return DownloadOutcome.RETRYABLE_FAILURE
+                    return self._refreshes_exhausted()
                 fresh = self._take_refresh()
                 if fresh is None:
                     return DownloadOutcome.RETRYABLE_FAILURE
@@ -303,19 +353,32 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     assert manifest is not None
                 continue
             if outcome is SegmentedOutcome.RANGE_UNSUPPORTED:
+                self.live_manager.update_log(
+                    event="Download progress",
+                    details=(
+                        f"Segmented download not possible for {self.download_info.filename}; "
+                        "using a single stream."
+                    ),
+                )
                 discard_partial(temp_path)
                 return self._run_single(
                     TransferPlan(TransferMode.SINGLE_NO_RESUME, None, plan.remote),
                     temp_path, final_path, headers,
                 )
             if outcome is SegmentedOutcome.MANIFEST_INVALID:
-                if self._resets >= self._caps().manifest_reset_max:
+                if not self._reset_or_give_up(temp_path):
                     return DownloadOutcome.TERMINAL_FAILURE
-                self._resets += 1
-                discard_partial(temp_path)
                 manifest = self._fresh_manifest(len(manifest.segments), manifest)
                 continue
             if outcome is SegmentedOutcome.TERMINAL:
+                self.live_manager.update_log(
+                    event="Download error",
+                    details=(
+                        f"Cannot write {self.download_info.filename}: "
+                        f"{downloader.last_os_error or 'disk error'}; the partial is kept "
+                        "so a rerun can resume."
+                    ),
+                )
                 return DownloadOutcome.TERMINAL_FAILURE
             if outcome is SegmentedOutcome.CANCELLED:
                 return DownloadOutcome.RETRYABLE_FAILURE
@@ -344,11 +407,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         resume_from = manifest.segments[0].done if manifest is not None else 0
         if not resume_from:
             return 0
-        try:
-            on_disk = temp_path.stat().st_size
-        except OSError:
-            on_disk = -1
-        if on_disk >= resume_from:
+        if _file_size(temp_path) >= resume_from:
             return resume_from
         self._drop_single_partial(temp_path, manifest)
         self.live_manager.update_log(
@@ -392,6 +451,15 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         no thread ever holds two slots.
         """
         manifest = plan.manifest
+        if manifest is not None and manifest.complete and _file_size(temp_path) == manifest.size:
+            # Every byte is already on disk (e.g. the rename failed last time):
+            # a Range from the end would only earn a 416 and a re-download.
+            return finalise_download(
+                file_size=manifest.size, total_downloaded=manifest.size,
+                temp_path=temp_path, final_path=final_path,
+                progress_manager=self.live_manager, task=self.download_info.task,
+                manifest_file=manifest_path(temp_path),
+            )
         attempt = 0
         while attempt < self.retries:
             if self._ctx.cancelled:
@@ -439,15 +507,13 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                 attempt += 1
                 continue
             if verdict is _SingleVerdict.RESET:
-                if self._resets >= self._caps().manifest_reset_max:
+                if not self._reset_or_give_up(temp_path):
                     return DownloadOutcome.TERMINAL_FAILURE
-                self._resets += 1
-                discard_partial(temp_path)
                 manifest = self._fresh_manifest(1, manifest)
                 continue
             # _SingleVerdict.REFRESH
             if self._refreshes >= self._caps().link_refresh_max:
-                return DownloadOutcome.RETRYABLE_FAILURE
+                return self._refreshes_exhausted()
             fresh = self._take_refresh()
             if fresh is not None:
                 replan = self._replan_after_refresh(fresh, manifest, temp_path, headers)

@@ -16,6 +16,7 @@ manifest vouch for data that never reached the disk.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from dataclasses import dataclass, field
@@ -256,9 +257,16 @@ def manifest_matches_remote(
 
 
 def discard_partial(temp_path: Path) -> None:
-    """Delete the data file and its manifest; missing files are not an error."""
+    """Delete the data file and its manifest; never raises.
+
+    A missing file is fine; any other ``OSError`` (permissions, a busy SMB
+    share) is logged at debug level and the caller carries on — the next
+    write either truncates the leftovers or fails with its own error.
+    """
     for path in (temp_path, manifest_path(temp_path)):
         try:
             path.unlink()
         except FileNotFoundError:
             pass
+        except OSError as err:
+            logging.debug("Could not remove partial %s: %s", path, err)

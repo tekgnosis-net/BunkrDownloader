@@ -127,7 +127,9 @@ def _request_sign_token(
     try:
         with requests.Session() as session:
             session.headers.update(headers)
-            response = session.get(request_url)
+            # Bounded: this now runs inside download workers (link refresh),
+            # where a hung signing endpoint would pin a thread forever.
+            response = session.get(request_url, timeout=20)
 
         if response.status_code != HTTPStatus.OK:
             logging.warning(

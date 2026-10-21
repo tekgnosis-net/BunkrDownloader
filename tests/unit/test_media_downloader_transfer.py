@@ -392,3 +392,120 @@ def test_legacy_stem_temp_with_manifest_is_left_alone(range_server, tmp_path, fa
     dl = _dl(fake_live_manager, tmp_path, range_server.url)
     assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.SUCCESS
     assert legacy.exists() and (tmp_path / "file.temp.parts").exists()
+
+
+# --- partial hygiene and failure logging --------------------------------------
+
+def test_no_resume_plan_discards_a_leftover_manifest(range_server, tmp_path, fake_live_manager):
+    final, temp = _seed_single(range_server, tmp_path, done=1000, temp_bytes=1000)
+    range_server.no_ranges = True                      # HEAD: no Accept-Ranges -> no resume
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, min_mb=100)
+    assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
+    assert not manifest_path(temp).exists() and not temp.exists()
+    assert not any("Resuming" in d for _, d in fake_live_manager.logs)
+    assert _sha(final.read_bytes()) == _sha(range_server.data)
+
+
+def test_complete_single_manifest_finalises_without_a_request(range_server, tmp_path,
+                                                              fake_live_manager):
+    size = len(range_server.data)
+    final, temp = _seed_single(range_server, tmp_path, done=size, temp_bytes=size)
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, min_mb=100)
+    assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
+    assert range_server.get_count == 0
+    assert not manifest_path(temp).exists()
+    assert _sha(final.read_bytes()) == _sha(range_server.data)
+
+
+def test_single_416_with_resets_spent_discards_partial_and_logs(range_server, tmp_path,
+                                                                fake_live_manager):
+    size = len(range_server.data)
+    final = tmp_path / "file.bin"
+    temp = temp_path_for(final)
+    manifest = TransferManifest.plan(size + 1000, 1, etag=range_server.etag)
+    manifest.segments[0].done = size + 10             # past the server's EOF -> 416
+    temp.write_bytes(b"\0" * (size + 10))
+    save_manifest(manifest, manifest_path(temp))
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, min_mb=100,
+             extra={"manifest_reset_max": 0})
+    with patch("src.downloaders.media_downloader.probe_remote",
+               return_value=RemoteInfo(size + 1000, range_server.etag, True)):
+        assert dl.attempt_download(str(final)) is DownloadOutcome.TERMINAL_FAILURE
+    assert not temp.exists() and not manifest_path(temp).exists()
+    assert any("Giving up on file.bin" in d for _, d in fake_live_manager.logs)
+
+
+def test_segmented_resets_spent_discards_partial(range_server, tmp_path, fake_live_manager):
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, extra={"manifest_reset_max": 0})
+    final = tmp_path / "file.bin"
+    temp = temp_path_for(final)
+    temp.write_bytes(b"x")
+    save_manifest(TransferManifest.plan(len(range_server.data), 4, etag=None),
+                  manifest_path(temp))
+    with patch.object(SegmentedDownloader, "run", autospec=True,
+                      return_value=SegmentedOutcome.MANIFEST_INVALID):
+        assert dl.attempt_download(str(final)) is DownloadOutcome.TERMINAL_FAILURE
+    assert not temp.exists() and not manifest_path(temp).exists()
+
+
+def test_manifest_reset_logs_restart(range_server, tmp_path, fake_live_manager):
+    dl = _dl(fake_live_manager, tmp_path, range_server.url)
+    real_run = SegmentedDownloader.run
+    calls = []
+
+    def run(self):
+        calls.append(1)
+        return SegmentedOutcome.MANIFEST_INVALID if len(calls) == 1 else real_run(self)
+    with patch.object(SegmentedDownloader, "run", autospec=True, side_effect=run):
+        assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.SUCCESS
+    assert ("Download progress",
+            "Restarting file.bin from 0: on-disk partial invalid.") in fake_live_manager.logs
+
+
+def test_exhausted_refreshes_are_logged(range_server, tmp_path, fake_live_manager):
+    range_server.forbid_from_request = 1
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, item_page="https://bunkr.cr/f/abc",
+             extra={"link_refresh_max": 2})
+    with patch.object(dl, "_refresh_link", side_effect=lambda: range_server.url + "?t=x"), \
+            patch.object(MediaDownloader, "_pause", return_value=True):
+        assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.RETRYABLE_FAILURE
+    assert any("Gave up re-resolving file.bin after 2 refreshes" in d
+               for _, d in fake_live_manager.logs)
+
+
+def test_segmented_disk_error_logs_errno_and_hides_row(range_server, tmp_path, fake_live_manager,
+                                                       monkeypatch):
+    import src.downloaders.segmented_download as seg_mod  # pylint: disable=import-outside-toplevel
+
+    def boom(*_a, **_k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(seg_mod.os, "pwrite", boom)
+    dl = _dl(fake_live_manager, tmp_path, range_server.url)
+    assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.TERMINAL_FAILURE
+    assert any(e == "Download error" and "[Errno 28] No space left on device" in d
+               for e, d in fake_live_manager.logs)
+    last_task_update = fake_live_manager.task_updates[-1][1]
+    assert last_task_update["visible"] is False and last_task_update["completed"] == 0
+
+
+def test_segmented_retryable_hides_row(range_server, tmp_path, fake_live_manager):
+    range_server.fail_status_from_request = 1
+    dl = _dl(fake_live_manager, tmp_path, range_server.url)
+    with patch.object(dl, "_handle_request_exception", return_value=False):
+        assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.RETRYABLE_FAILURE
+    assert fake_live_manager.task_updates[-1][1]["visible"] is False
+
+
+def test_unpresizable_file_system_downloads_with_one_stream(range_server, tmp_path,
+                                                            fake_live_manager, monkeypatch):
+    import errno  # pylint: disable=import-outside-toplevel
+
+    def refuse(*_a):
+        raise OSError(errno.EINVAL, "Invalid argument")
+    monkeypatch.setattr(os, "ftruncate", refuse)
+    dl = _dl(fake_live_manager, tmp_path, range_server.url)
+    final = tmp_path / "file.bin"
+    assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
+    assert range_server.get_count == 1
+    assert _sha(final.read_bytes()) == _sha(range_server.data)
+    assert any("using a single stream" in d for _, d in fake_live_manager.logs)

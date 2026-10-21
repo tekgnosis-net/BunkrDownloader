@@ -173,3 +173,19 @@ def test_temp_path_for_appends_to_the_full_name(tmp_path):
     assert temp_path_for(str(tmp_path / "a.mp4")) == tmp_path / "a.mp4.temp"
     assert temp_path_for(tmp_path / "a.mp4") != temp_path_for(tmp_path / "a.mkv")
     assert temp_path_for(tmp_path / "noext") == tmp_path / "noext.temp"
+
+
+def test_discard_partial_tolerates_any_oserror(tmp_path, monkeypatch):
+    parts_of = manifest_path
+    temp = tmp_path / "f.bin.temp"
+    temp.write_bytes(b"x")
+    parts_of(temp).write_text("{}")
+    real_unlink = Path.unlink
+
+    def deny(self, *args, **kwargs):
+        if self.name.endswith(".temp"):
+            raise PermissionError(13, "Permission denied")
+        return real_unlink(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", deny)
+    discard_partial(temp)                      # must not raise
+    assert temp.exists() and not parts_of(temp).exists()

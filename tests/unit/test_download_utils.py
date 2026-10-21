@@ -209,3 +209,75 @@ def test_save_file_partial_keeps_manifest_progress(tmp_path, fake_live_manager):
     saved = load_manifest(manifest_path(temp))
     assert saved is not None and saved.segments[0].done == 10
     assert temp.exists()
+
+
+def test_finalise_succeeds_when_only_the_manifest_delete_fails(
+    tmp_path: Path, fake_live_manager, monkeypatch,
+) -> None:
+    """The rename is what matters: a stuck .parts must not turn SUCCESS into a retry."""
+
+    temp = tmp_path / "f.bin.temp"
+    temp.write_bytes(b"x" * 8)
+    parts = tmp_path / "f.bin.temp.parts"
+    parts.write_text("{}")
+    real_unlink = Path.unlink
+
+    def deny(self, *args, **kwargs):
+        if self.name.endswith(".parts"):
+            raise PermissionError(13, "Permission denied")
+        return real_unlink(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", deny)
+    outcome = _finalise_download(
+        file_size=8, total_downloaded=8, temp_path=temp,
+        final_path=str(tmp_path / "f.bin"), progress_manager=fake_live_manager, task=0,
+        manifest_file=parts,
+    )
+    assert outcome is DownloadOutcome.SUCCESS and (tmp_path / "f.bin").exists()
+
+
+def test_single_stream_survives_manifest_save_errors(
+    tmp_path: Path, fake_live_manager, monkeypatch,
+) -> None:
+    """A manifest that cannot be written costs resumability, not the download."""
+    # pylint: disable-next=import-outside-toplevel
+    from src.downloaders.transfer_manifest import TransferManifest
+
+    def broken(*_args, **_kwargs):
+        raise OSError(5, "Input/output error")
+    monkeypatch.setattr(download_utils, "save_manifest", broken)
+    monkeypatch.setattr(download_utils, "MANIFEST_FLUSH_BYTES", 8)
+    manifest = TransferManifest.plan(32, 1, etag=None)
+    response = FakeResponse([b"z" * 8] * 4, headers={"Content-Length": "32"})
+    final = tmp_path / "s.bin"
+    outcome = save_file_with_progress(response, str(final), 0, fake_live_manager,
+                                      manifest=manifest)
+    assert outcome is DownloadOutcome.SUCCESS and final.read_bytes() == b"z" * 32
+
+
+def test_single_stream_stops_between_chunks_when_cancelled(
+    tmp_path: Path, fake_live_manager,
+) -> None:
+    """The cancel flag is honoured between chunks and the progress is persisted."""
+    # pylint: disable-next=import-outside-toplevel
+    import threading
+    # pylint: disable-next=import-outside-toplevel
+    from src.downloaders.transfer_manifest import (
+        TransferManifest, load_manifest, manifest_path, temp_path_for,
+    )
+
+    cancel = threading.Event()
+    manifest = TransferManifest.plan(40, 1, etag=None)
+
+    class _Cancelling(FakeResponse):  # pylint: disable=too-few-public-methods
+        def iter_content(self, chunk_size=None):
+            for index, chunk in enumerate(super().iter_content(chunk_size)):
+                if index == 2:
+                    cancel.set()
+                yield chunk
+    response = _Cancelling([b"c" * 10] * 4, headers={"Content-Length": "40"})
+    final = tmp_path / "c.bin"
+    outcome = save_file_with_progress(response, str(final), 0, fake_live_manager,
+                                      manifest=manifest, cancel_event=cancel)
+    assert outcome is DownloadOutcome.RETRYABLE_FAILURE and not final.exists()
+    saved = load_manifest(manifest_path(temp_path_for(final)))
+    assert saved is not None and saved.segments[0].done == 20

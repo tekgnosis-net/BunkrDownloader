@@ -111,6 +111,19 @@ class _ManifestInvalid(Exception):
     """416 or Content-Range disagreement: local offsets are wrong."""
 
 
+class _PresizeUnsupported(Exception):
+    """The file system refused ``ftruncate`` (e.g. some SMB/FUSE mounts)."""
+
+
+# ftruncate errors that mean "this file system cannot pre-size", not "disk full".
+_PRESIZE_UNSUPPORTED_ERRNOS = frozenset(
+    code for code in (
+        errno.EPERM, errno.EINVAL,
+        getattr(errno, "ENOTSUP", None), getattr(errno, "EOPNOTSUPP", None),
+    ) if code is not None
+)
+
+
 class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-few-public-methods
     """Fetch every incomplete segment of ``manifest`` in parallel into ``temp_path``.
 
@@ -122,7 +135,8 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
     After :meth:`run`, ``last_error`` holds the last worker
     ``RequestException`` that carried an HTTP response (429, 5xx, other
     non-2xx statuses) so the caller can apply its status-page / maintenance
-    handling to a ``RETRYABLE`` outcome.
+    handling to a ``RETRYABLE`` outcome, and ``last_os_error`` the disk error
+    behind a ``TERMINAL`` one.
     """
 
     def __init__(  # pylint: disable=too-many-arguments
@@ -158,20 +172,16 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         self._generation = 0
         self._saved_generation = 0
         self.last_error: RequestException | None = None
+        self.last_os_error: OSError | None = None
+        self._last_pct: float | None = None
 
     # ---- public -----------------------------------------------------------
 
     def run(self) -> SegmentedOutcome:
         """Run all incomplete segments; always leaves a consistent manifest on disk."""
-        try:
-            file_ok = self._prepare_file()
-        except OSError as os_err:
-            logging.warning("Cannot prepare %s: %s", self.temp_path, os_err)
-            self._close_fd()
-            return SegmentedOutcome.TERMINAL
-        if not file_ok:
-            self._close_fd()
-            return SegmentedOutcome.MANIFEST_INVALID
+        blocked = self._open()
+        if blocked is not None:
+            return blocked
 
         pending = [s for s in self.manifest.segments if not s.complete]
         if not pending:
@@ -214,11 +224,29 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         """Outcome a worker's exception stands for (see :func:`_classify`)."""
         if isinstance(exc, RequestException) and exc.response is not None:
             self.last_error = exc
+        elif isinstance(exc, OSError) and not isinstance(exc, RequestException):
+            self.last_os_error = exc
         result = _classify(exc)
         if result is SegmentedOutcome.CANCELLED and not self.cancel_event.is_set():
             # A slot wait abandoned because of our own fail-fast: no vote.
             return SegmentedOutcome.COMPLETE
         return result
+
+    def _open(self) -> SegmentedOutcome | None:
+        """Open and pre-size the temp file; the outcome when the run cannot start."""
+        try:
+            if self._prepare_file():
+                return None
+            outcome = SegmentedOutcome.MANIFEST_INVALID
+        except _PresizeUnsupported:
+            # This file system cannot pre-size: the caller falls back to one stream.
+            outcome = SegmentedOutcome.RANGE_UNSUPPORTED
+        except OSError as os_err:
+            logging.warning("Cannot prepare %s: %s", self.temp_path, os_err)
+            self.last_os_error = os_err
+            outcome = SegmentedOutcome.TERMINAL
+        self._close_fd()
+        return outcome
 
     def _close_fd(self) -> None:
         if self._fd is not None:
@@ -233,7 +261,14 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         if not intact:
             if self.manifest.bytes_done > 0:
                 return False
-            os.ftruncate(self._fd, self.manifest.size)
+            try:
+                os.ftruncate(self._fd, self.manifest.size)
+            except OSError as err:
+                if err.errno in _PRESIZE_UNSUPPORTED_ERRNOS:
+                    logging.info("Cannot pre-size %s (%s); falling back to one stream",
+                                 self.temp_path, err)
+                    raise _PresizeUnsupported() from err
+                raise
         return True
 
     def _try_flush(self) -> bool:
@@ -241,6 +276,7 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
             self._flush()
         except OSError as os_err:
             logging.warning("Cannot save manifest for %s: %s", self.temp_path, os_err)
+            self.last_os_error = os_err
             return False
         return True
 
@@ -272,7 +308,11 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
             self._total += delta
             size = self.manifest.size
             pct = min(100.0, self._total / size * 100) if size else 0.0
-            self.progress_manager.update_task(self.task, completed=pct)
+            # Emit only when the visible value (0.1 %) moves; 100 % always lands.
+            shown = round(pct, 1)
+            if shown != self._last_pct or pct >= 100.0:
+                self._last_pct = shown
+                self.progress_manager.update_task(self.task, completed=pct)
 
     def _check_stop(self) -> None:
         if self.cancel_event.is_set():
@@ -376,12 +416,21 @@ def cleanup_stale_partials(
 
     Only pairs are touched: a lone ``<stem>.temp`` from an older build has
     no manifest and is removed by ``MediaDownloader._drop_legacy_temp`` on
-    the next attempt of that file.
-    ``0`` disables the sweep.
+    the next attempt of that file. Stray ``*.temp.parts.tmp`` files (a
+    manifest write interrupted by a crash) older than the cutoff are removed
+    too but not reported. ``0`` disables the sweep. Blocking I/O: async
+    callers run it via ``asyncio.to_thread``.
     """
     if max_age_hours <= 0 or not directory.is_dir():
         return []
     cutoff = (now if now is not None else time.time()) - max_age_hours * 3600
+    for stray in sorted(directory.glob("*.temp.parts.tmp")):
+        try:
+            stale = stray.stat().st_mtime < cutoff
+        except OSError:
+            continue
+        if stale:
+            _unlink_quietly(stray)
     removed: list[Path] = []
     for parts in sorted(directory.glob("*.temp.parts")):
         temp = parts.with_name(parts.name[: -len(".parts")])

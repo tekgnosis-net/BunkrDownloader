@@ -136,7 +136,7 @@ def _log_once(progress_manager: ProgressManager, message: str) -> None:
 
 
 def _remove_quietly(path: Path | None) -> None:
-    """Delete ``path`` if given; a missing file is fine."""
+    """Delete ``path`` if given; never raises (other errors are logged at debug)."""
 
     if path is None:
         return
@@ -144,14 +144,23 @@ def _remove_quietly(path: Path | None) -> None:
         path.unlink()
     except FileNotFoundError:
         pass
+    except OSError as err:
+        logging.debug("Could not remove %s: %s", path, err)
 
 
 def _persist_manifest(file: IO[bytes], manifest: TransferManifest, path: Path) -> None:
-    """Make every byte written so far durable, then record it in the manifest."""
+    """Make every byte written so far durable, then record it in the manifest.
 
-    file.flush()
-    sync_data(file.fileno())
-    save_manifest(manifest, path)
+    Best effort: an ``OSError`` is logged at debug level and the stream goes
+    on (a failed sync skips the save, so the manifest never over-claims).
+    """
+
+    try:
+        file.flush()
+        sync_data(file.fileno())
+        save_manifest(manifest, path)
+    except OSError as err:
+        logging.debug("Could not persist manifest %s: %s", path, err)
 
 
 class _ProgressEstimator:  # pylint: disable=too-few-public-methods

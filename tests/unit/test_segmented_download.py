@@ -281,3 +281,57 @@ def test_segmented_missing_temp_with_progress_is_manifest_invalid(range_server, 
     outcome, _, _, _ = _run(range_server, tmp_path, manifest=manifest)
     assert outcome is SegmentedOutcome.MANIFEST_INVALID
     assert range_server.get_count == 0         # nothing fetched on top of missing data
+
+
+def test_ftruncate_unsupported_falls_back_to_single_stream(range_server, tmp_path, monkeypatch):
+    import errno  # pylint: disable=import-outside-toplevel
+
+    def refuse(*_a):
+        raise OSError(errno.EINVAL, "Invalid argument")
+    monkeypatch.setattr(os, "ftruncate", refuse)
+    outcome, _, _, _ = _run(range_server, tmp_path)
+    assert outcome is SegmentedOutcome.RANGE_UNSUPPORTED
+    assert range_server.get_count == 0
+
+
+def test_ftruncate_disk_full_is_terminal_with_errno(range_server, tmp_path, monkeypatch):
+    import errno  # pylint: disable=import-outside-toplevel
+
+    def full(*_a):
+        raise OSError(errno.ENOSPC, "No space left on device")
+    monkeypatch.setattr(os, "ftruncate", full)
+    temp = tmp_path / "file.bin.temp"
+    manifest = TransferManifest.plan(len(range_server.data), 4, etag=range_server.etag)
+    dl = SegmentedDownloader(url=range_server.url, headers={}, temp_path=temp, manifest=manifest,
+                             progress_manager=_PM(), task=0)
+    assert dl.run() is SegmentedOutcome.TERMINAL
+    assert dl.last_os_error is not None and dl.last_os_error.errno == errno.ENOSPC
+
+
+def test_worker_disk_error_is_recorded(range_server, tmp_path, monkeypatch):
+    import src.downloaders.segmented_download as mod  # pylint: disable=import-outside-toplevel
+
+    def boom(*_a, **_k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(mod.os, "pwrite", boom)
+    temp = tmp_path / "file.bin.temp"
+    manifest = TransferManifest.plan(len(range_server.data), 4, etag=range_server.etag)
+    dl = SegmentedDownloader(url=range_server.url, headers={}, temp_path=temp, manifest=manifest,
+                             progress_manager=_PM(), task=0)
+    assert dl.run() is SegmentedOutcome.TERMINAL
+    assert "[Errno 28]" in str(dl.last_os_error)
+
+
+def test_progress_is_emitted_only_when_the_shown_value_moves(range_server, tmp_path, monkeypatch):
+    real_pwrite = os.pwrite
+
+    def short(fd, data, offset):
+        return real_pwrite(fd, bytes(data[:1000]), offset)
+    monkeypatch.setattr(os, "pwrite", short)
+    outcome, temp, _, pm = _run(range_server, tmp_path)
+    assert outcome is SegmentedOutcome.COMPLETE and _sha(temp) == _sha_of(range_server.data)
+    # ~5,200 short writes, but at most one update per 0.1 % step (plus the final 100 %).
+    assert len(pm.completed) <= 1002
+    assert pm.completed[-1] == 100.0
+    shown = [round(p, 1) for p in pm.completed[:-1]]
+    assert len(shown) == len(set(shown))

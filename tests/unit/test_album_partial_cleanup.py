@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -90,3 +91,31 @@ def test_download_album_runs_cleanup_with_job_setting(fake_live_manager, session
     cl.assert_called_once()
     assert cl.call_args.args[1] == 5
     assert any("a.temp" in d for _, d in fake_live_manager.logs)
+
+
+def test_cleanup_removes_old_stray_manifest_temp_files(tmp_path: Path):
+    stray = tmp_path / "a.mp4.temp.parts.tmp"
+    stray.write_text("{")
+    _old(stray, 200)
+    fresh = tmp_path / "b.mp4.temp.parts.tmp"
+    fresh.write_text("{")
+    # pylint: disable=use-implicit-booleaness-not-comparison
+    assert cleanup_stale_partials(tmp_path, 168) == []      # strays are not reported
+    assert not stray.exists() and fresh.exists()
+
+
+def test_download_album_sweeps_off_the_event_loop(fake_live_manager, session_info):
+    seen = []
+
+    def record(*_args):
+        seen.append(threading.current_thread() is threading.main_thread())
+        return []
+    album = AlbumDownloader(
+        session_info=session_info,
+        album_info=AlbumInfo(album_id="x", item_pages=[]),
+        live_manager=fake_live_manager,
+    )
+    with patch("src.downloaders.album_downloader.cleanup_stale_partials", side_effect=record), \
+            patch.object(album, "_process_failed_downloads", new=AsyncMock()):
+        asyncio.run(album.download_album(max_workers=1))
+    assert seen == [False]

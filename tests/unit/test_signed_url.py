@@ -89,6 +89,8 @@ def test_get_signed_download_url_appends_token_and_ex() -> None:
     assert queried_url == (
         "https://glb-apisign.cdn.cr/sign?path=%2Fstorage%2Fmedia%2Ffoo.mp4"
     )
+    # Bounded: link refresh calls this from download worker threads.
+    assert session.get.call_args.kwargs["timeout"] == 20
 
 
 def test_get_signed_download_url_returns_none_on_sign_failure() -> None:

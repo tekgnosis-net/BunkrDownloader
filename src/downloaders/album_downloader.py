@@ -180,7 +180,9 @@ class AlbumDownloader:
     async def download_album(self, max_workers: int = MAX_WORKERS) -> None:
         """Handle the album download."""
         settings = self.transfer_context.settings
-        removed = cleanup_stale_partials(
+        # Directory scan + unlinks: keep them off the event loop.
+        removed = await asyncio.to_thread(
+            cleanup_stale_partials,
             Path(self.session_info.download_path), settings.partial_max_age_hours,
         )
         for path in removed:
