@@ -7,6 +7,7 @@ integrating with live task displays.
 import asyncio
 from asyncio import Semaphore
 from collections import defaultdict
+from pathlib import Path
 
 from src.bunkr_utils import get_subdomain, refresh_server_status
 from src.config import (
@@ -16,6 +17,7 @@ from src.config import (
     AlbumInfo,
     DownloadInfo,
     SessionInfo,
+    resolve_transfer_settings,
 )
 from src.crawlers.api_utils import detect_item_page_maintenance
 from src.crawlers.crawler_utils import get_download_info
@@ -24,6 +26,7 @@ from src.general_utils import fetch_page
 from src.managers.live_manager import LiveManager
 
 from .media_downloader import MediaDownloader
+from .segmented_download import cleanup_stale_partials
 
 
 class AlbumDownloader:
@@ -168,6 +171,15 @@ class AlbumDownloader:
 
     async def download_album(self, max_workers: int = MAX_WORKERS) -> None:
         """Handle the album download."""
+        settings = resolve_transfer_settings(self.session_info.args)
+        removed = cleanup_stale_partials(
+            Path(self.session_info.download_path), settings.partial_max_age_hours,
+        )
+        for path in removed:
+            self.live_manager.update_log(
+                event="Stale partial removed",
+                details=f"Deleted abandoned partial download {path.name}",
+            )
         num_tasks = len(self.album_info.item_pages)
         self.live_manager.add_overall_task(
             description=self.album_info.album_id,

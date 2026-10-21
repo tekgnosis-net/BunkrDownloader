@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
@@ -313,3 +314,33 @@ def _classify(exc: Exception) -> SegmentedOutcome:
     if isinstance(exc, OSError) and not isinstance(exc, RequestException):
         return SegmentedOutcome.TERMINAL
     return SegmentedOutcome.RETRYABLE
+
+
+def cleanup_stale_partials(
+    directory: Path, max_age_hours: int, *, now: float | None = None,
+) -> list[Path]:
+    """Delete ``*.temp`` + ``*.temp.parts`` pairs older than ``max_age_hours``.
+
+    Only pairs are touched: a lone ``.temp`` from an older build has no
+    manifest and is left for the existing "discard on next attempt" path.
+    ``0`` disables the sweep.
+    """
+    if max_age_hours <= 0 or not directory.is_dir():
+        return []
+    cutoff = (now if now is not None else time.time()) - max_age_hours * 3600
+    removed: list[Path] = []
+    for parts in sorted(directory.glob("*.temp.parts")):
+        temp = parts.with_name(parts.name[: -len(".parts")])
+        try:
+            newest = max(parts.stat().st_mtime, temp.stat().st_mtime if temp.exists() else 0)
+        except OSError:
+            continue
+        if newest >= cutoff:
+            continue
+        for path in (temp, parts):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        removed.append(temp)
+    return removed
