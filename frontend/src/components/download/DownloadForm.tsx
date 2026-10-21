@@ -28,6 +28,10 @@ interface Settings {
   downloadReferer: string;
   fallbackDomain: string;
   userAgent: string;
+  segments: number;
+  segmentMinSizeMb: number;
+  maxConnections: number;
+  partialMaxAgeHours: number;
 }
 
 interface FormState {
@@ -121,6 +125,9 @@ export function DownloadForm({ settings, onJobStarted }: DownloadFormProps) {
         disable_disk_check: form.disableDiskCheck,
         log_level: settings.logLevel,
         max_workers: settings.maxWorkers,
+        segments: settings.segments,
+        segment_min_size_mb: settings.segmentMinSizeMb,
+        max_connections: settings.maxConnections,
         network,
       };
       const { data } = await api.post("/downloads", payload);

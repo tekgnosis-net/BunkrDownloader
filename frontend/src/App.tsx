@@ -27,6 +27,10 @@ interface AppSettings {
   downloadReferer: string;
   fallbackDomain: string;
   userAgent: string;
+  segments: number;
+  segmentMinSizeMb: number;
+  maxConnections: number;
+  partialMaxAgeHours: number;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -38,7 +42,31 @@ const DEFAULT_SETTINGS: AppSettings = {
   fallbackDomain: "bunkr.cr",
   userAgent:
     "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0",
+  segments: 4,
+  segmentMinSizeMb: 32,
+  maxConnections: 12,
+  partialMaxAgeHours: 168,
 };
+
+const SEEDED_KEY = "bunkrdownloader:transfer-seeded-v1";
+
+interface ServerDefaults {
+  download?: {
+    max_workers?: number;
+    segments?: number;
+    segment_min_size_mb?: number;
+    max_connections?: number;
+    partial_max_age_hours?: number;
+    link_refresh_max?: number;
+    manifest_reset_max?: number;
+  };
+}
+
+/** Operator-set caps shown read-only in the Transfer card. */
+export interface ServerCaps {
+  linkRefreshMax?: number;
+  manifestResetMax?: number;
+}
 
 interface UpdateInfo {
   latestVersion: string | null;
@@ -65,10 +93,13 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
  * Settings. All the heavy lifting happens inside the extracted components.
  */
 export default function App() {
-  const [settings, setSettings] = usePersistentState(
+  const [storedSettings, setSettings] = usePersistentState(
     "bunkrdownloader:settings",
     DEFAULT_SETTINGS,
   );
+  // Settings saved by an older build lack the Transfer fields; fill them in.
+  const settings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings };
+  const [serverCaps, setServerCaps] = useState<ServerCaps>({});
   const [appVersion, setAppVersion] = useState("dev");
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo>({
     latestVersion: null,
@@ -84,6 +115,72 @@ export default function App() {
       if (data?.version) setAppVersion(String(data.version));
     }).catch(() => void 0);
   }, []);
+
+  // Seed the Transfer group from the server once per browser so env-set
+  // defaults show up in the UI; a user's saved values are never overwritten.
+  useEffect(() => {
+    let seeded = false;
+    try {
+      seeded = window.localStorage.getItem(SEEDED_KEY) === "1";
+    } catch {
+      /* ignore */
+    }
+    void api
+      .get<ServerDefaults>("/settings/defaults")
+      .then(({ data }) => {
+        const d = data?.download;
+        if (!d) return;
+        setServerCaps({
+          linkRefreshMax: d.link_refresh_max,
+          manifestResetMax: d.manifest_reset_max,
+        });
+        // Operator-only value: always mirror the server for display.
+        if (seeded) {
+          if (d.partial_max_age_hours !== undefined) {
+            setSettings((prev) => ({ ...prev, partialMaxAgeHours: d.partial_max_age_hours as number }));
+          }
+          return;
+        }
+        setSettings((prev) => ({
+          ...prev,
+          maxWorkers: d.max_workers ?? prev.maxWorkers,
+          segments: d.segments ?? prev.segments,
+          segmentMinSizeMb: d.segment_min_size_mb ?? prev.segmentMinSizeMb,
+          maxConnections: d.max_connections ?? prev.maxConnections,
+          partialMaxAgeHours: d.partial_max_age_hours ?? prev.partialMaxAgeHours,
+        }));
+        try {
+          window.localStorage.setItem(SEEDED_KEY, "1");
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch(() => void 0);
+    // Run once on mount; setSettings is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const resetTransferDefaults = async () => {
+    try {
+      const { data } = await api.get<ServerDefaults>("/settings/defaults");
+      const d = data?.download;
+      if (!d) return;
+      setServerCaps({
+        linkRefreshMax: d.link_refresh_max,
+        manifestResetMax: d.manifest_reset_max,
+      });
+      setSettings((prev) => ({
+        ...prev,
+        segments: d.segments ?? prev.segments,
+        segmentMinSizeMb: d.segment_min_size_mb ?? prev.segmentMinSizeMb,
+        maxConnections: d.max_connections ?? prev.maxConnections,
+        partialMaxAgeHours: d.partial_max_age_hours ?? prev.partialMaxAgeHours,
+      }));
+      toast({ title: "Transfer settings reset to server defaults", status: "info" });
+    } catch {
+      toast({ title: "Could not load server defaults", status: "error" });
+    }
+  };
 
   // Re-attach to a job that is still running server-side. Jobs are server
   // tasks and keep going when the tab closes; the page just forgets which
@@ -173,6 +270,8 @@ export default function App() {
           <TabPanel px={0}>
             <SettingsPanel
               settings={settings}
+              serverCaps={serverCaps}
+              onResetTransfer={resetTransferDefaults}
               onChange={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
             />
           </TabPanel>
