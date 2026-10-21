@@ -31,6 +31,8 @@ interface AppSettings {
   segmentMinSizeMb: number;
   maxConnections: number;
   partialMaxAgeHours: number;
+  linkRefreshMax: number;
+  manifestResetMax: number;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -46,6 +48,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   segmentMinSizeMb: 32,
   maxConnections: 12,
   partialMaxAgeHours: 168,
+  linkRefreshMax: 2,
+  manifestResetMax: 1,
 };
 
 const SEEDED_KEY = "bunkrdownloader:transfer-seeded-v1";
@@ -60,12 +64,6 @@ interface ServerDefaults {
     link_refresh_max?: number;
     manifest_reset_max?: number;
   };
-}
-
-/** Operator-set caps shown read-only in the Transfer card. */
-export interface ServerCaps {
-  linkRefreshMax?: number;
-  manifestResetMax?: number;
 }
 
 interface UpdateInfo {
@@ -99,7 +97,6 @@ export default function App() {
   );
   // Settings saved by an older build lack the Transfer fields; fill them in.
   const settings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings };
-  const [serverCaps, setServerCaps] = useState<ServerCaps>({});
   const [appVersion, setAppVersion] = useState("dev");
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo>({
     latestVersion: null,
@@ -130,23 +127,15 @@ export default function App() {
       .then(({ data }) => {
         const d = data?.download;
         if (!d) return;
-        setServerCaps({
-          linkRefreshMax: d.link_refresh_max,
-          manifestResetMax: d.manifest_reset_max,
-        });
-        // Operator-only value: always mirror the server for display.
-        if (seeded) {
-          if (d.partial_max_age_hours !== undefined) {
-            setSettings((prev) => ({ ...prev, partialMaxAgeHours: d.partial_max_age_hours as number }));
-          }
-          return;
-        }
+        if (seeded) return;
         setSettings((prev) => ({
           ...prev,
           segments: d.segments ?? prev.segments,
           segmentMinSizeMb: d.segment_min_size_mb ?? prev.segmentMinSizeMb,
           maxConnections: d.max_connections ?? prev.maxConnections,
           partialMaxAgeHours: d.partial_max_age_hours ?? prev.partialMaxAgeHours,
+        linkRefreshMax: d.link_refresh_max ?? prev.linkRefreshMax,
+        manifestResetMax: d.manifest_reset_max ?? prev.manifestResetMax,
         }));
         try {
           window.localStorage.setItem(SEEDED_KEY, "1");
@@ -164,16 +153,14 @@ export default function App() {
       const { data } = await api.get<ServerDefaults>("/settings/defaults");
       const d = data?.download;
       if (!d) return;
-      setServerCaps({
-        linkRefreshMax: d.link_refresh_max,
-        manifestResetMax: d.manifest_reset_max,
-      });
       setSettings((prev) => ({
         ...prev,
         segments: d.segments ?? prev.segments,
         segmentMinSizeMb: d.segment_min_size_mb ?? prev.segmentMinSizeMb,
         maxConnections: d.max_connections ?? prev.maxConnections,
         partialMaxAgeHours: d.partial_max_age_hours ?? prev.partialMaxAgeHours,
+        linkRefreshMax: d.link_refresh_max ?? prev.linkRefreshMax,
+        manifestResetMax: d.manifest_reset_max ?? prev.manifestResetMax,
       }));
       toast({ title: "Transfer settings reset to server defaults", status: "info" });
     } catch {
@@ -269,7 +256,6 @@ export default function App() {
           <TabPanel px={0}>
             <SettingsPanel
               settings={settings}
-              serverCaps={serverCaps}
               onResetTransfer={resetTransferDefaults}
               onChange={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
             />

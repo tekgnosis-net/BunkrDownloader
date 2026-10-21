@@ -26,8 +26,6 @@ from src.config import (
     DOWNLOAD_HEADERS,
     DownloadInfo,
     HTTPStatus,
-    LINK_REFRESH_MAX,
-    MANIFEST_RESET_MAX,
     MAX_WORKERS,
     SessionInfo,
     TransferSettings,
@@ -83,6 +81,12 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         self._remote: RemoteInfo | None = None
         self._refreshes = 0
         self._resets = 0
+
+    def _caps(self) -> TransferSettings:
+        """Return the job's resolved settings (resolving lazily if unset)."""
+        if self._settings is None:
+            self._settings = resolve_transfer_settings(self.session_info.args)
+        return self._settings
 
     def attempt_download(self, final_path: str) -> DownloadOutcome:
         """Download ``final_path`` with retries, segmentation and resume."""
@@ -236,7 +240,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     manifest_file=manifest_path(temp_path),
                 )
             if outcome is SegmentedOutcome.NEEDS_REFRESH:
-                if self._refreshes >= LINK_REFRESH_MAX:
+                if self._refreshes >= self._caps().link_refresh_max:
                     return DownloadOutcome.RETRYABLE_FAILURE
                 fresh = self._take_refresh()
                 if fresh is None:
@@ -255,7 +259,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     temp_path, final_path, headers,
                 )
             if outcome is SegmentedOutcome.MANIFEST_INVALID:
-                if self._resets >= MANIFEST_RESET_MAX:
+                if self._resets >= self._caps().manifest_reset_max:
                     return DownloadOutcome.TERMINAL_FAILURE
                 self._resets += 1
                 discard_partial(temp_path)
@@ -312,7 +316,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                 )
                 if response.status_code == HTTPStatus.RANGE_NOT_SATISFIABLE and resume_from:
                     response.close()
-                    if self._resets >= MANIFEST_RESET_MAX:
+                    if self._resets >= self._caps().manifest_reset_max:
                         return DownloadOutcome.TERMINAL_FAILURE
                     self._resets += 1
                     discard_partial(temp_path)
@@ -320,7 +324,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     continue
                 if response.status_code in (HTTPStatus.FORBIDDEN, HTTPStatus.UNAUTHORIZED):
                     response.close()
-                    if self._refreshes >= LINK_REFRESH_MAX:
+                    if self._refreshes >= self._caps().link_refresh_max:
                         return DownloadOutcome.RETRYABLE_FAILURE
                     fresh = self._take_refresh()
                     if fresh is not None:
@@ -349,7 +353,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                 or not self._content_range_ok(response, resume_from, manifest.size)
             ):
                 response.close()
-                if self._resets >= MANIFEST_RESET_MAX:
+                if self._resets >= self._caps().manifest_reset_max:
                     return DownloadOutcome.TERMINAL_FAILURE
                 self._resets += 1
                 self._drop_single_partial(temp_path, manifest)

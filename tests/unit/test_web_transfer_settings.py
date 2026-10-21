@@ -36,16 +36,22 @@ def test_namespace_preserves_absent_and_present_fields():
     assert (ns.segments, ns.segment_min_size_mb, ns.max_connections) == (2, 64, 5)
 
 
-def test_partial_max_age_is_operator_only_not_a_request_field():
-    req = DownloadRequest(urls=["https://bunkr.cr/a/x"], partial_max_age_hours=0)
-    assert not hasattr(req, "partial_max_age_hours")
+def test_namespace_passes_all_six_transfer_fields_and_preserves_none():
+    req = DownloadRequest(urls=["https://bunkr.cr/a/x"])
     ns = _build_namespace("https://bunkr.cr/a/x", req)
-    assert not hasattr(ns, "partial_max_age_hours")
+    assert ns.partial_max_age_hours is None
+    assert ns.link_refresh_max is None and ns.manifest_reset_max is None
+    req = DownloadRequest(urls=["https://bunkr.cr/a/x"], partial_max_age_hours=24,
+                          link_refresh_max=4, manifest_reset_max=0)
+    ns = _build_namespace("https://bunkr.cr/a/x", req)
+    assert (ns.partial_max_age_hours, ns.link_refresh_max, ns.manifest_reset_max) == (24, 4, 0)
 
 
-def test_partial_max_age_in_request_body_is_ignored():
-    req = DownloadRequest.model_validate(
-        {"urls": ["https://bunkr.cr/a/x"], "partial_max_age_hours": 0}
-    )
-    assert "partial_max_age_hours" not in req.model_dump()
-    assert not hasattr(req, "partial_max_age_hours")
+def test_link_refresh_and_reset_bounds_rejected():
+    with TestClient(app) as client:
+        for field, value in (("link_refresh_max", 11), ("manifest_reset_max", 6),
+                             ("partial_max_age_hours", 8761)):
+            resp = client.post(
+                "/api/downloads", json={"urls": ["https://bunkr.cr/a/x"], field: value}
+            )
+            assert resp.status_code == 422

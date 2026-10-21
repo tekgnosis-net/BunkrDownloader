@@ -32,6 +32,8 @@ interface Settings {
   segmentMinSizeMb: number;
   maxConnections: number;
   partialMaxAgeHours: number;
+  linkRefreshMax: number;
+  manifestResetMax: number;
 }
 
 interface FormState {
@@ -128,6 +130,9 @@ export function DownloadForm({ settings, onJobStarted }: DownloadFormProps) {
         segments: settings.segments,
         segment_min_size_mb: settings.segmentMinSizeMb,
         max_connections: settings.maxConnections,
+        partial_max_age_hours: settings.partialMaxAgeHours,
+        link_refresh_max: settings.linkRefreshMax,
+        manifest_reset_max: settings.manifestResetMax,
         network,
       };
       const { data } = await api.post("/downloads", payload);

@@ -37,8 +37,6 @@ from src.config import (
     JOB_EVENT_RETENTION,
     JOB_REAPER_INTERVAL_SECONDS,
     JOB_TTL_HOURS,
-    LINK_REFRESH_MAX,
-    MANIFEST_RESET_MAX,
     MAX_WORKERS,
     build_network_context,
     get_network_settings,
@@ -120,6 +118,18 @@ class DownloadRequest(BaseModel):
     max_connections: int | None = Field(
         default=None, ge=1, le=64,
         description="Process-wide cap on simultaneous download connections.",
+    )
+    partial_max_age_hours: int | None = Field(
+        default=None, ge=0, le=8760,
+        description="Delete abandoned partials older than this at job start; 0 disables.",
+    )
+    link_refresh_max: int | None = Field(
+        default=None, ge=0, le=10,
+        description="Max signed-URL re-resolutions per file attempt.",
+    )
+    manifest_reset_max: int | None = Field(
+        default=None, ge=0, le=5,
+        description="Max discard-and-restart cycles per file attempt.",
     )
     network: NetworkOverrides | None = Field(
         default=None,
@@ -668,6 +678,9 @@ def _build_namespace(url: str, request: DownloadRequest) -> Namespace:
         segments=request.segments,
         segment_min_size_mb=request.segment_min_size_mb,
         max_connections=request.max_connections,
+        partial_max_age_hours=request.partial_max_age_hours,
+        link_refresh_max=request.link_refresh_max,
+        manifest_reset_max=request.manifest_reset_max,
         status_page=request.network.status_page if request.network else None,
         bunkr_api=request.network.api_endpoint if request.network else None,
         download_referer=request.network.download_referer if request.network else None,
@@ -850,8 +863,8 @@ async def get_settings_defaults() -> dict[str, dict[str, Any]]:
             "segment_min_size_mb": transfer.segment_min_bytes // (1024 * 1024),
             "max_connections": transfer.max_connections,
             "partial_max_age_hours": transfer.partial_max_age_hours,
-            "link_refresh_max": LINK_REFRESH_MAX,
-            "manifest_reset_max": MANIFEST_RESET_MAX,
+            "link_refresh_max": transfer.link_refresh_max,
+            "manifest_reset_max": transfer.manifest_reset_max,
         },
     }
 

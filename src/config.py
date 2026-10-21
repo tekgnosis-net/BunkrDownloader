@@ -185,6 +185,8 @@ _TRANSFER_CLAMPS: dict[str, tuple[int, int]] = {
     "segment_min_size_mb": (1, 4096),
     "max_connections": (1, 64),
     "partial_max_age_hours": (0, 8760),
+    "link_refresh_max": (0, 10),
+    "manifest_reset_max": (0, 5),
 }
 
 
@@ -196,6 +198,8 @@ class TransferSettings:
     segment_min_bytes: int
     max_connections: int
     partial_max_age_hours: int
+    link_refresh_max: int
+    manifest_reset_max: int
 
 
 def _clamped_arg(args: Namespace | None, name: str, default: int) -> int:
@@ -214,19 +218,16 @@ def resolve_transfer_settings(args: Namespace | None) -> TransferSettings:
 
     Env-derived module constants are the defaults; any attribute present and
     non-``None`` on ``args`` (CLI flag or web request field) overrides it and
-    is clamped to the same bounds. Exception: ``max_connections`` is a
-    process-wide ceiling, so a per-job value can only lower it; the effective
-    value is ``min(clamped request value, MAX_CONCURRENT_CONNECTIONS)``.
+    is clamped to the same bounds. Env values are defaults; any attribute
+    present on args overrides within the same bounds.
     """
-    max_connections = min(
-        _clamped_arg(args, "max_connections", MAX_CONCURRENT_CONNECTIONS),
-        MAX_CONCURRENT_CONNECTIONS,
-    )
     return TransferSettings(
         segments=_clamped_arg(args, "segments", DOWNLOAD_SEGMENTS),
         segment_min_bytes=_clamped_arg(args, "segment_min_size_mb", SEGMENT_MIN_FILE_SIZE_MB) * MB,
-        max_connections=max_connections,
+        max_connections=_clamped_arg(args, "max_connections", MAX_CONCURRENT_CONNECTIONS),
         partial_max_age_hours=_clamped_arg(args, "partial_max_age_hours", PARTIAL_MAX_AGE_HOURS),
+        link_refresh_max=_clamped_arg(args, "link_refresh_max", LINK_REFRESH_MAX),
+        manifest_reset_max=_clamped_arg(args, "manifest_reset_max", MANIFEST_RESET_MAX),
     )
 
 # Web job memory bounds (PR2)
@@ -590,6 +591,20 @@ def add_common_arguments(parser: ArgumentParser) -> None:
             "Delete abandoned partial downloads older than this at job start; "
             "0 disables (default: %(default)s)."
         ),
+    )
+    parser.add_argument(
+        "--link-refresh-max",
+        dest="link_refresh_max",
+        type=int,
+        default=LINK_REFRESH_MAX,
+        help="Max signed-URL re-resolutions per file attempt, 0-10 (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--manifest-reset-max",
+        dest="manifest_reset_max",
+        type=int,
+        default=MANIFEST_RESET_MAX,
+        help="Max discard-and-restart cycles per file attempt, 0-5 (default: %(default)s).",
     )
 
 

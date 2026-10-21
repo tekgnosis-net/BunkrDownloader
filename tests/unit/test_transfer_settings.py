@@ -73,10 +73,23 @@ def test_resolve_transfer_settings_per_job_wins_and_is_clamped():
     assert settings.partial_max_age_hours == 168              # None -> env/default
 
 
-def test_per_job_max_connections_cannot_exceed_env_ceiling():
+def test_per_job_max_connections_may_exceed_env_default():
     from src.config import resolve_transfer_settings  # pylint: disable=import-outside-toplevel
-    assert resolve_transfer_settings(Namespace(max_connections=64)).max_connections == 12
+    assert resolve_transfer_settings(Namespace(max_connections=64)).max_connections == 64
     assert resolve_transfer_settings(Namespace(max_connections=4)).max_connections == 4
+    assert resolve_transfer_settings(Namespace(max_connections=500)).max_connections == 64
+
+
+def test_resolve_link_refresh_and_manifest_reset():
+    from src.config import resolve_transfer_settings  # pylint: disable=import-outside-toplevel
+    base = resolve_transfer_settings(None)
+    assert (base.link_refresh_max, base.manifest_reset_max) == (2, 1)
+    s = resolve_transfer_settings(Namespace(link_refresh_max=7, manifest_reset_max=3))
+    assert (s.link_refresh_max, s.manifest_reset_max) == (7, 3)
+    s = resolve_transfer_settings(Namespace(link_refresh_max=99, manifest_reset_max=-4))
+    assert (s.link_refresh_max, s.manifest_reset_max) == (10, 0)
+    s = resolve_transfer_settings(Namespace(link_refresh_max=None, manifest_reset_max="x"))
+    assert (s.link_refresh_max, s.manifest_reset_max) == (2, 1)
 
 
 def test_cli_flags_registered_with_env_defaults():
@@ -88,6 +101,9 @@ def test_cli_flags_registered_with_env_defaults():
     assert ns.segment_min_size_mb == 32
     assert ns.max_connections == 12
     assert ns.partial_max_age_hours == 168
+    assert (ns.link_refresh_max, ns.manifest_reset_max) == (2, 1)
+    ns = parser.parse_args(["--link-refresh-max", "5", "--manifest-reset-max", "0"])
+    assert (ns.link_refresh_max, ns.manifest_reset_max) == (5, 0)
     ns = parser.parse_args(["--segments", "2", "--segment-min-size-mb", "64",
                             "--max-connections", "6", "--partial-max-age-hours", "0"])
     assert (ns.segments, ns.segment_min_size_mb, ns.max_connections,

@@ -26,12 +26,13 @@ interface Settings {
   segmentMinSizeMb: number;
   maxConnections: number;
   partialMaxAgeHours: number;
+  linkRefreshMax: number;
+  manifestResetMax: number;
 }
 
 interface SettingsPanelProps {
   settings: Settings;
   onChange: (patch: Partial<Settings>) => void;
-  serverCaps: { linkRefreshMax?: number; manifestResetMax?: number };
   onResetTransfer: () => void;
 }
 
@@ -39,7 +40,7 @@ interface SettingsPanelProps {
  * Settings tab body — logging verbosity, concurrency cap, and the
  * NetworkContext overrides that PR1 introduced.
  */
-export function SettingsPanel({ settings, onChange, serverCaps, onResetTransfer }: SettingsPanelProps) {
+export function SettingsPanel({ settings, onChange, onResetTransfer }: SettingsPanelProps) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
       <Surface variant="card">
@@ -89,18 +90,18 @@ export function SettingsPanel({ settings, onChange, serverCaps, onResetTransfer 
           <NumberSetting label="Minimum file size to segment (MB)" tip="1–4096. Smaller files use one stream; also the smallest size a single segment may have."
             value={settings.segmentMinSizeMb} min={1} max={4096} fallback={32}
             onChange={(n) => onChange({ segmentMinSizeMb: n })} />
-          <NumberSetting label="Max simultaneous connections" tip="1–64. Cap across all workers and segments. The server enforces its own ceiling (MAX_CONCURRENT_CONNECTIONS); values above it are lowered to the ceiling."
+          <NumberSetting label="Max simultaneous connections" tip="Cap across all workers and segments (1–64). Bunkr rate-limits bulk activity per IP."
             value={settings.maxConnections} min={1} max={64} fallback={12}
             onChange={(n) => onChange({ maxConnections: n })} />
-          <ReadOnlyValue label="Delete abandoned partials after (hours)"
-            tip="Set by the server (PARTIAL_MAX_AGE_HOURS env or --partial-max-age-hours). Not adjustable per job."
-            value={settings.partialMaxAgeHours} testId="partial-max-age" />
-          <ReadOnlyValue label="Signed-URL refreshes per file"
-            tip="Set by the server (LINK_REFRESH_MAX env). Not adjustable per job."
-            value={serverCaps.linkRefreshMax} testId="link-refresh-max" />
-          <ReadOnlyValue label="Restarts per file"
-            tip="Set by the server (MANIFEST_RESET_MAX env). Not adjustable per job."
-            value={serverCaps.manifestResetMax} testId="manifest-reset-max" />
+          <NumberSetting label="Delete abandoned partials after (hours)" tip="0–8760. Abandoned .temp files older than this are deleted at job start; 0 disables the sweep."
+            value={settings.partialMaxAgeHours} min={0} max={8760} fallback={168}
+            onChange={(n) => onChange({ partialMaxAgeHours: n })} />
+          <NumberSetting label="Signed-URL refreshes per file" tip="0–10. How many times an expired signed link may be re-resolved per file attempt."
+            value={settings.linkRefreshMax} min={0} max={10} fallback={2}
+            onChange={(n) => onChange({ linkRefreshMax: n })} />
+          <NumberSetting label="Restarts per file" tip="0–5. How many times a corrupt or mismatched partial may be discarded and restarted per file attempt."
+            value={settings.manifestResetMax} min={0} max={5} fallback={1}
+            onChange={(n) => onChange({ manifestResetMax: n })} />
         </SimpleGrid>
       </Surface>
 
@@ -182,24 +183,6 @@ function NumberSetting({ label, tip, value, min, max, fallback, onChange }: Numb
           <NumberDecrementStepper />
         </NumberInputStepper>
       </NumberInput>
-    </FormControl>
-  );
-}
-
-interface ReadOnlyValueProps {
-  label: string;
-  tip: string;
-  value: number | undefined;
-  testId: string;
-}
-
-function ReadOnlyValue({ label, tip, value, testId }: ReadOnlyValueProps) {
-  return (
-    <FormControl>
-      <Tooltip label={tip} hasArrow openDelay={300}>
-        <FormLabel>{label}</FormLabel>
-      </Tooltip>
-      <Input value={value === undefined ? "—" : String(value)} isReadOnly isDisabled data-testid={testId} />
     </FormControl>
   );
 }

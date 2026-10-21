@@ -20,7 +20,8 @@ from src.downloaders.segmented_download import (
 from src.downloaders.transfer_manifest import TransferManifest, load_manifest, manifest_path
 
 SETTINGS = TransferSettings(segments=4, segment_min_bytes=32 * 1024 * 1024,
-                            max_connections=12, partial_max_age_hours=168)
+                            max_connections=12, partial_max_age_hours=168,
+                            link_refresh_max=2, manifest_reset_max=1)
 
 
 def test_plan_unknown_size_is_single_no_resume():
@@ -45,7 +46,7 @@ def test_plan_small_file_is_single_resumable_with_one_segment():
 
 def test_plan_segments_one_is_single_resumable():
     s = TransferSettings(segments=1, segment_min_bytes=1, max_connections=12,
-                         partial_max_age_hours=0)
+                         partial_max_age_hours=0, link_refresh_max=2, manifest_reset_max=1)
     plan = plan_transfer(RemoteInfo(10**9, None, True), s, existing=None, url_origin=None)
     assert plan.mode is TransferMode.SINGLE and len(plan.manifest.segments) == 1
 

@@ -14,7 +14,7 @@ from unittest.mock import patch
 import requests
 
 from src.config import (
-    LINK_REFRESH_MAX, DownloadInfo, NetworkContext, SessionInfo, resolve_transfer_settings,
+    DownloadInfo, NetworkContext, SessionInfo, resolve_transfer_settings,
 )
 from src.downloaders.download_utils import DownloadOutcome
 from src.downloaders import media_downloader
@@ -24,10 +24,12 @@ from src.downloaders.segmented_download import SegmentedDownloader, SegmentedOut
 from src.downloaders.transfer_manifest import TransferManifest, manifest_path, save_manifest
 
 
-def _dl(fake_live_manager, tmp_path, url, *, segments=4, min_mb=1, item_page=None):
+def _dl(fake_live_manager, tmp_path, url, *, segments=4, min_mb=1, item_page=None, extra=None):
     args = Namespace(skip_status_check=True, status_cache_ttl=60, maintenance_strategy="skip",
                      segments=segments, segment_min_size_mb=min_mb, max_connections=12,
                      partial_max_age_hours=0, max_workers=1)
+    for key, value in (extra or {}).items():
+        setattr(args, key, value)
     network = NetworkContext(status_page="https://s.example/", bunkr_api="https://a.example/",
                              fallback_domain="example.cr", user_agent="t/1", download_referer="https://r.example/")
     si = SessionInfo(args=args, bunkr_status={}, download_path=str(tmp_path), network=network)
@@ -183,11 +185,19 @@ def test_probe_failure_keeps_partial(range_server, tmp_path, fake_live_manager):
 
 def test_refresh_cap_is_bounded(range_server, tmp_path, fake_live_manager):
     range_server.forbid_from_request = 1
-    dl = _dl(fake_live_manager, tmp_path, range_server.url, item_page="https://bunkr.cr/f/abc")
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, item_page="https://bunkr.cr/f/abc",
+             extra={"link_refresh_max": 2})
     with patch.object(dl, "_refresh_link", side_effect=lambda: range_server.url + "?t=x") as refresh, \
             patch("src.downloaders.media_downloader.time.sleep"):
         assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.RETRYABLE_FAILURE
-    assert refresh.call_count == LINK_REFRESH_MAX
+    assert refresh.call_count == 2
+
+
+def test_manifest_reset_max_zero_is_terminal(range_server, tmp_path, fake_live_manager):
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, extra={"manifest_reset_max": 0})
+    with patch.object(SegmentedDownloader, "run", autospec=True,
+                      return_value=SegmentedOutcome.MANIFEST_INVALID):
+        assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.TERMINAL_FAILURE
 
 
 def test_manifest_invalid_gets_one_restart_even_with_single_retry(range_server, tmp_path, fake_live_manager):
