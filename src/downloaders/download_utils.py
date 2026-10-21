@@ -151,19 +151,24 @@ def _remove_quietly(path: Path | None) -> None:
 def _persist_manifest(file: IO[bytes], manifest: TransferManifest, path: Path) -> bool:
     """Make every byte written so far durable, then record it in the manifest.
 
-    Returns False when the sync or the save failed; the manifest on disk is
-    then older than the data (never the other way round). The caller treats
-    the first failure as terminal: a later successful sync would not cover
-    the bytes whose writeback was reported lost.
+    Returns False when the data could not be synced: the caller treats that
+    as terminal, because a later successful sync would not cover the bytes
+    whose writeback was reported lost. A manifest that merely cannot be
+    *saved* costs resumability, not the download (the data is durable), so
+    that is logged and the stream goes on; the manifest on disk is then
+    older than the data, never the other way round.
     """
 
     try:
         file.flush()
         sync_data(file.fileno())
+    except OSError as err:
+        logging.warning("Could not sync %s: %s", path, err)
+        return False
+    try:
         save_manifest(manifest, path)
     except OSError as err:
-        logging.warning("Could not persist manifest %s: %s", path, err)
-        return False
+        logging.debug("Could not persist manifest %s: %s", path, err)
     return True
 
 
