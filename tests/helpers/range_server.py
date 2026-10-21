@@ -73,7 +73,7 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
                     spec = rng_header.replace("bytes=", "")
                     lo, _, hi = spec.partition("-")
                     start = int(lo)
-                    end = int(hi) if hi else end
+                    end = min(int(hi), len(server.data) - 1) if hi else end
                     if start >= len(server.data):
                         self.send_response(416)
                         self._common_headers(0)
@@ -90,22 +90,28 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
                 with server._lock:  # pylint: disable=protected-access
                     abort_at = None
                     if server.abort_once_after is not None and not server._aborted_once:  # pylint: disable=protected-access
-                        server._aborted_once = True  # pylint: disable=protected-access
                         abort_at = server.abort_once_after
                 self._send_body(body, abort_at)
 
             def _send_body(self, body: bytes, abort_at: int | None) -> None:
                 sent = 0
-                for offset in range(0, len(body), CHUNK_SIZE):
-                    chunk = body[offset:offset + CHUNK_SIZE]
-                    if abort_at is not None and sent + len(chunk) > abort_at:
-                        self.wfile.write(chunk[: max(0, abort_at - sent)])
-                        self.wfile.flush()
-                        self.close_connection = True
-                        self.connection.close()
-                        return
-                    self.wfile.write(chunk)
-                    sent += len(chunk)
+                try:
+                    for offset in range(0, len(body), CHUNK_SIZE):
+                        chunk = body[offset:offset + CHUNK_SIZE]
+                        if abort_at is not None and sent + len(chunk) > abort_at:
+                            # Only a cut inside the body counts as the one-shot fault firing.
+                            with server._lock:  # pylint: disable=protected-access
+                                server._aborted_once = True  # pylint: disable=protected-access
+                            self.wfile.write(chunk[: max(0, abort_at - sent)])
+                            self.wfile.flush()
+                            self.close_connection = True
+                            self.connection.close()
+                            return
+                        self.wfile.write(chunk)
+                        sent += len(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    # Client disconnected mid-body: return quietly, no socketserver traceback.
+                    self.close_connection = True
 
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
