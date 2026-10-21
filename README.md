@@ -195,6 +195,7 @@ python3 main.py [shared flags]
 - **Progress panes** – overall progress + per-file stripes; tooltips explain each control and metric.
 - **Live log** – chronological events, retries, and skips with full timestamps.
 - **Resilient updates** – when a WebSocket drops (e.g. container restart) the UI polls `/api/downloads/{job}/events` until the socket reconnects.
+- **Re-attach on reload** – downloads are server-side tasks and keep running when the tab is closed; reopening the dashboard finds the newest running job, replays its history and resumes live progress.
 - **Source shortcut** – in-app link to the GitHub repository for quick reference.
 - **Version badge** – header shows the semantic version embedded in the running container image.
 

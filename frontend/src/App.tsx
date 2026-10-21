@@ -45,6 +45,15 @@ interface UpdateInfo {
   updateAvailable: boolean;
 }
 
+/** Shape of one entry from ``GET /api/downloads`` (server ``JobInfo``). */
+interface RunningJob {
+  job_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  created_at: string;
+  urls: string[];
+  error: string | null;
+}
+
 // The backend caches the GitHub release for 6h, so re-polling more often just
 // returns the same cached verdict; this keeps a long-lived dashboard current
 // without needless round-trips.
@@ -74,6 +83,34 @@ export default function App() {
     void api.get("/meta").then(({ data }) => {
       if (data?.version) setAppVersion(String(data.version));
     }).catch(() => void 0);
+  }, []);
+
+  // Re-attach to a job that is still running server-side. Jobs are server
+  // tasks and keep going when the tab closes; the page just forgets which
+  // one it was watching. On load, pick the newest pending/running job and
+  // make it active — the connection layer then replays its history from
+  // event id 0 and continues live.
+  useEffect(() => {
+    if (useJobStore.getState().jobId) return;
+    void api
+      .get<RunningJob[]>("/downloads")
+      .then(({ data }) => {
+        const active = (data ?? [])
+          .filter((j) => j.status === "running" || j.status === "pending")
+          .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+        if (!active || useJobStore.getState().jobId) return;
+        useJobStore.getState().setJob(active.job_id, active.status);
+        toast({
+          title: "Re-attached to running download",
+          description: active.urls[0],
+          status: "info",
+          duration: 5000,
+          isClosable: true,
+        });
+      })
+      .catch(() => void 0);
+    // toast is stable per Chakra's docs; run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
