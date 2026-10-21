@@ -1,31 +1,32 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
+
+function readStored<T>(key: string, initial: T): T {
+  if (typeof window === "undefined") return initial;
+  try {
+    const stored = window.localStorage.getItem(key);
+    return stored === null ? initial : (JSON.parse(stored) as T);
+  } catch {
+    // parse/read failures are not worth surfacing in the UI
+    return initial;
+  }
+}
 
 /**
  * A controlled state hook that mirrors its value into ``localStorage``.
- * Intentionally best-effort — serialization/quota failures fall back to
- * in-memory state without surfacing errors.
+ * The stored value is read synchronously in the state initialiser, so the
+ * first render already has it and the write effect can never run with the
+ * default before the stored value is applied (which React 18's dev-mode
+ * double mount used to make possible). Intentionally best-effort —
+ * serialization/quota failures fall back to in-memory state.
  */
 export function usePersistentState<T>(
   key: string,
   initial: T,
 ): [T, (next: T | ((prev: T) => T)) => void] {
-  const loaded = useRef(false);
-  const [value, setValue] = useState<T>(initial);
+  const [value, setValue] = useState<T>(() => readStored(key, initial));
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    try {
-      const stored = window.localStorage.getItem(key);
-      if (stored !== null) setValue(JSON.parse(stored) as T);
-    } catch {
-      // ignore parse/read failures — they're not worth surfacing in the UI
-    } finally {
-      loaded.current = true;
-    }
-  }, [key]);
-
-  useEffect(() => {
-    if (!loaded.current || typeof window === "undefined") return;
     try {
       window.localStorage.setItem(key, JSON.stringify(value));
     } catch {
