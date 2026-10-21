@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -100,3 +102,64 @@ def test_discard_partial_removes_both_and_ignores_missing(tmp_path: Path):
     discard_partial(temp)
     assert not temp.exists() and not manifest_path(temp).exists()
     discard_partial(temp)   # no raise
+
+
+def test_valid_dict_loads_back(tmp_path: Path):
+    path = tmp_path / "ok.temp.parts"
+    path.write_text(json.dumps(TransferManifest.plan(100, 2, etag='"a"').to_dict()))
+    assert load_manifest(path) is not None
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d["segments"][0].update(done=-1),                  # negative done
+        lambda d: d["segments"][0].update(done=51),                  # done > length (50)
+        lambda d: d["segments"][1].update(start=51),                 # gap between segments
+        lambda d: d["segments"][-1].update(end=98),                  # last end != size - 1
+        lambda d: d.update(etag=123),                                # non-string etag
+        lambda d: d.update(size=-1),                                 # negative size
+    ],
+)
+def test_structurally_invalid_manifest_loads_as_none(tmp_path: Path, mutate):
+    data = TransferManifest.plan(100, 2, etag='"a"').to_dict()
+    mutate(data)
+    path = tmp_path / "bad.temp.parts"
+    path.write_text(json.dumps(data))
+    assert load_manifest(path) is None
+
+
+def test_concurrent_saves_leave_valid_manifest_and_no_tmp(tmp_path: Path):
+    path = tmp_path / "race.temp.parts"
+    manifest = TransferManifest.plan(1000, 4, etag='"abc"')
+    errors: list[OSError] = []
+
+    def worker():
+        try:
+            for _ in range(50):
+                save_manifest(manifest, path)
+        except OSError as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    loaded = load_manifest(path)
+    assert loaded is not None and loaded.size == 1000
+    assert not (tmp_path / "race.temp.parts.tmp").exists()
+
+
+def test_failed_replace_removes_tmp_and_reraises(tmp_path: Path, monkeypatch):
+    path = tmp_path / "f.temp.parts"
+
+    def boom(_src, _dst):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        save_manifest(TransferManifest.plan(10, 2, etag=None), path)
+    assert not (tmp_path / "f.temp.parts.tmp").exists()
+    assert not path.exists()

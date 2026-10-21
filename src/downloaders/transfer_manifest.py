@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 MANIFEST_VERSION = 1
+_SAVE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -105,18 +107,38 @@ class TransferManifest:
 
     @classmethod
     def from_dict(cls, data: dict) -> TransferManifest:
-        """Inverse of :meth:`to_dict`; raises ``ValueError`` on bad shape."""
+        """Inverse of :meth:`to_dict`; raises ``ValueError`` on bad shape.
+
+        Validates the invariants the resume logic relies on: non-negative
+        size, a string-or-null ETag, contiguous segments starting at 0 that
+        tile ``[0, size)`` exactly, and ``0 <= done <= length`` per segment.
+        """
         if data.get("version") != MANIFEST_VERSION:
             raise ValueError("unsupported manifest version")
+        size = int(data["size"])
+        if size < 0:
+            raise ValueError("negative manifest size")
+        etag = data.get("etag")
+        if etag is not None and not isinstance(etag, str):
+            raise ValueError("manifest etag must be a string or null")
         segments = [
             Segment(start=int(s["start"]), end=int(s["end"]), done=int(s.get("done", 0)))
             for s in data["segments"]
         ]
         if not segments:
             raise ValueError("manifest has no segments")
+        expected_start = 0
+        for segment in segments:
+            if segment.end < segment.start - 1 or segment.start != expected_start:
+                raise ValueError("manifest segments are not contiguous")
+            if not 0 <= segment.done <= segment.length:
+                raise ValueError("manifest segment progress out of range")
+            expected_start = segment.end + 1
+        if segments[-1].end != size - 1:
+            raise ValueError("manifest segments do not cover the file")
         return cls(
-            size=int(data["size"]),
-            etag=data.get("etag"),
+            size=size,
+            etag=etag,
             segments=segments,
             url_origin=data.get("url_origin"),
         )
@@ -128,10 +150,23 @@ def manifest_path(temp_path: Path) -> Path:
 
 
 def save_manifest(manifest: TransferManifest, path: Path) -> None:
-    """Write the manifest atomically (temp file + ``os.replace``)."""
+    """Write the manifest atomically (temp file + ``os.replace``).
+
+    Safe to call from multiple threads; atomic against process death (no
+    fsync, so not against power loss). A failed write removes the temp file
+    and re-raises.
+    """
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(manifest.to_dict()), encoding="utf-8")
-    os.replace(tmp, path)
+    with _SAVE_LOCK:
+        try:
+            tmp.write_text(json.dumps(manifest.to_dict()), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
 
 
 def load_manifest(path: Path) -> TransferManifest | None:
