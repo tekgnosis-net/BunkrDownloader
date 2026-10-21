@@ -174,8 +174,9 @@ function NumberSetting({ label, tip, value, min, max, fallback, onChange }: Numb
       <NumberInput
         min={min}
         max={max}
+        precision={0}
         value={value}
-        onChange={(_, n) => onChange(Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback)}
+        onChange={(_, n) => onChange(Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback)}
       >
         <NumberInputField />
         <NumberInputStepper>
