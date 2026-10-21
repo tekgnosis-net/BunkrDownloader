@@ -163,3 +163,13 @@ def test_failed_replace_removes_tmp_and_reraises(tmp_path: Path, monkeypatch):
         save_manifest(TransferManifest.plan(10, 2, etag=None), path)
     assert not (tmp_path / "f.temp.parts.tmp").exists()
     assert not path.exists()
+
+
+def test_temp_path_for_appends_to_the_full_name(tmp_path):
+    # pylint: disable-next=import-outside-toplevel
+    from src.downloaders.transfer_manifest import temp_path_for
+
+    assert temp_path_for(tmp_path / "a.mp4") == tmp_path / "a.mp4.temp"
+    assert temp_path_for(str(tmp_path / "a.mp4")) == tmp_path / "a.mp4.temp"
+    assert temp_path_for(tmp_path / "a.mp4") != temp_path_for(tmp_path / "a.mkv")
+    assert temp_path_for(tmp_path / "noext") == tmp_path / "noext.temp"

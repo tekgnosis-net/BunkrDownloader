@@ -169,10 +169,12 @@ def test_finalise_download_outcome_matrix(
 def test_save_file_resumes_from_offset_and_updates_manifest(tmp_path, fake_live_manager):
     """A 206 continuation writes at the offset and removes the manifest on success."""
     # pylint: disable-next=import-outside-toplevel
-    from src.downloaders.transfer_manifest import TransferManifest, manifest_path
+    from src.downloaders.transfer_manifest import (
+        TransferManifest, manifest_path, temp_path_for,
+    )
 
     final = tmp_path / "f.bin"
-    temp = final.with_suffix(".temp")
+    temp = temp_path_for(final)
     temp.write_bytes(b"A" * 10 + b"\0" * 10)           # 10 good bytes, pre-sized to 20
     manifest = TransferManifest.plan(20, 1, etag=None)
     manifest.segments[0].done = 10
@@ -192,11 +194,11 @@ def test_save_file_partial_keeps_manifest_progress(tmp_path, fake_live_manager):
     """An interrupted stream persists its byte count for the next attempt."""
     # pylint: disable-next=import-outside-toplevel
     from src.downloaders.transfer_manifest import (
-        TransferManifest, load_manifest, manifest_path,
+        TransferManifest, load_manifest, manifest_path, temp_path_for,
     )
 
     final = tmp_path / "g.bin"
-    temp = final.with_suffix(".temp")
+    temp = temp_path_for(final)
     manifest = TransferManifest.plan(30, 1, etag='"e"')
     response = FakeResponse(
         chunks=[b"x" * 10, ChunkedEncodingError("cut")],

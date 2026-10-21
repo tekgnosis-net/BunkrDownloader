@@ -374,8 +374,9 @@ def cleanup_stale_partials(
 ) -> list[Path]:
     """Delete ``*.temp`` + ``*.temp.parts`` pairs older than ``max_age_hours``.
 
-    Only pairs are touched: a lone ``.temp`` from an older build has no
-    manifest and is left for the existing "discard on next attempt" path.
+    Only pairs are touched: a lone ``<stem>.temp`` from an older build has
+    no manifest and is removed by ``MediaDownloader._drop_legacy_temp`` on
+    the next attempt of that file.
     ``0`` disables the sweep.
     """
     if max_age_hours <= 0 or not directory.is_dir():

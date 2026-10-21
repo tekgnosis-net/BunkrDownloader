@@ -1,6 +1,7 @@
 """On-disk manifest that makes a partially downloaded file resumable.
 
-``<final>.temp`` holds the bytes; ``<final>.temp.parts`` (this module) records
+``<final name>.temp`` (see :func:`temp_path_for`) holds the bytes;
+``<final name>.temp.parts`` (this module) records
 the remote size/ETag and, per segment, how many bytes have been written
 contiguously from the segment start. Workers only ever append within their
 own range, so ``done`` is always a prefix length — there are no holes.
@@ -157,6 +158,17 @@ class TransferManifest:
             segments=segments,
             url_origin=data.get("url_origin"),
         )
+
+
+def temp_path_for(final_path: str | Path) -> Path:
+    """In-flight data file for ``final_path``: the full name plus ``.temp``.
+
+    ``video.mp4`` -> ``video.mp4.temp`` (appended, never ``with_suffix``), so
+    ``a.mp4`` and ``a.mkv`` in one album can never share a partial. This name
+    is a stable on-disk contract: resume depends on finding it again.
+    """
+    final = Path(final_path)
+    return final.with_name(final.name + ".temp")
 
 
 def manifest_path(temp_path: Path) -> Path:

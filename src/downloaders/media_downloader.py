@@ -6,6 +6,7 @@ download experience.
 
 from __future__ import annotations
 
+import logging
 import os
 import random
 from enum import Enum
@@ -56,6 +57,7 @@ from .transfer_manifest import (
     load_manifest,
     manifest_matches_remote,
     manifest_path,
+    temp_path_for,
 )
 
 if TYPE_CHECKING:
@@ -117,7 +119,8 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         self._refreshes = 0
         self._resets = 0
 
-        temp_path = Path(final_path).with_suffix(".temp")
+        temp_path = temp_path_for(final_path)
+        self._drop_legacy_temp(final_path, temp_path)
         remote = probe_remote(self.download_info.download_link, headers)
         existing, remote = self._validate_existing(temp_path, remote)
         self._remote = remote
@@ -134,6 +137,24 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         if plan.mode is TransferMode.SEGMENTED:
             return self._run_segmented(plan, temp_path, final_path, headers)
         return self._run_single(plan, temp_path, final_path, headers)
+
+    @staticmethod
+    def _drop_legacy_temp(final_path: str | Path, temp_path: Path) -> None:
+        """Delete a manifest-less ``<stem>.temp`` left by builds that named partials so.
+
+        Older releases wrote ``video.temp`` for ``video.mp4`` and simply
+        overwrote it on the next attempt; with the ``video.mp4.temp`` name it
+        would otherwise linger forever. A ``<stem>.temp`` that has a
+        ``.parts`` manifest is left alone (it may be a live partial of a file
+        literally named ``<stem>``) and is swept by age like any partial.
+        """
+        legacy = Path(final_path).with_suffix(".temp")
+        if legacy == temp_path or manifest_path(legacy).exists() or not legacy.is_file():
+            return
+        try:
+            legacy.unlink()
+        except OSError as err:
+            logging.debug("Could not remove legacy partial %s: %s", legacy, err)
 
     def _validate_existing(
         self, temp_path: Path, remote: RemoteInfo,

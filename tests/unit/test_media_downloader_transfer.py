@@ -21,7 +21,9 @@ from src.downloaders import media_downloader
 from src.downloaders.media_downloader import MediaDownloader
 from src.downloaders.remote_probe import RemoteInfo
 from src.downloaders.segmented_download import SegmentedDownloader, SegmentedOutcome
-from src.downloaders.transfer_manifest import TransferManifest, manifest_path, save_manifest
+from src.downloaders.transfer_manifest import (
+    TransferManifest, manifest_path, save_manifest, temp_path_for,
+)
 
 
 def _dl(fake_live_manager, tmp_path, url, *, segments=4, min_mb=1, item_page=None, extra=None):
@@ -47,7 +49,7 @@ def test_attempt_download_segmented_end_to_end(range_server, tmp_path, fake_live
     final = tmp_path / "file.bin"
     assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
     assert _sha(final.read_bytes()) == _sha(range_server.data)
-    assert not manifest_path(final.with_suffix(".temp")).exists()
+    assert not manifest_path(temp_path_for(final)).exists()
     assert range_server.get_count == 4
 
 
@@ -60,7 +62,7 @@ def test_attempt_download_single_stream_below_threshold(range_server, tmp_path, 
 
 def test_attempt_download_resumes_existing_manifest_and_logs(range_server, tmp_path, fake_live_manager):
     final = tmp_path / "file.bin"
-    temp = final.with_suffix(".temp")
+    temp = temp_path_for(final)
     manifest = TransferManifest.plan(len(range_server.data), 4, etag=range_server.etag)
     s0 = manifest.segments[0]
     with temp.open("wb") as fh:
@@ -77,7 +79,7 @@ def test_attempt_download_resumes_existing_manifest_and_logs(range_server, tmp_p
 
 def test_attempt_download_discards_mismatched_manifest(range_server, tmp_path, fake_live_manager):
     final = tmp_path / "file.bin"
-    temp = final.with_suffix(".temp")
+    temp = temp_path_for(final)
     stale = TransferManifest.plan(len(range_server.data) + 1, 4, etag='"old"')
     stale.segments[0].done = 1000
     temp.write_bytes(b"\0" * 1000)
@@ -130,7 +132,7 @@ def test_segmented_downgrades_to_resumable_single_without_pwrite(
 def _seed_single(range_server, tmp_path, *, done, temp_bytes):
     """Write a one-segment manifest with ``done`` bytes claimed; temp holds ``temp_bytes``."""
     final = tmp_path / "file.bin"
-    temp = final.with_suffix(".temp")
+    temp = temp_path_for(final)
     manifest = TransferManifest.plan(len(range_server.data), 1, etag=range_server.etag)
     manifest.segments[0].done = done
     if temp_bytes is not None:
@@ -190,7 +192,7 @@ def test_probe_failure_resumes_single_partial_from_manifest(range_server, tmp_pa
 def test_probe_failure_resumes_segmented_partial_from_manifest(range_server, tmp_path,
                                                                fake_live_manager):
     final = tmp_path / "file.bin"
-    temp = final.with_suffix(".temp")
+    temp = temp_path_for(final)
     manifest = TransferManifest.plan(len(range_server.data), 4, etag=range_server.etag)
     s0 = manifest.segments[0]
     with temp.open("wb") as fh:
@@ -361,3 +363,32 @@ def test_zero_progress_manifest_with_unknown_probe_is_dropped(range_server, tmp_
         assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
     assert _sha(final.read_bytes()) == _sha(range_server.data)
     assert not manifest_path(temp).exists()
+
+
+def test_partials_use_the_full_final_name(range_server, tmp_path, fake_live_manager):
+    range_server.abort_once_after = 300_000
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, min_mb=100)
+    dl.retries = 1
+    final = tmp_path / "file.bin"
+    assert dl.attempt_download(str(final)) is DownloadOutcome.RETRYABLE_FAILURE
+    assert (tmp_path / "file.bin.temp").exists() and (tmp_path / "file.bin.temp.parts").exists()
+    assert not (tmp_path / "file.temp").exists()
+
+
+def test_legacy_stem_temp_without_manifest_is_removed(range_server, tmp_path, fake_live_manager):
+    legacy = tmp_path / "file.temp"                    # old builds: with_suffix(".temp")
+    legacy.write_bytes(b"stale")
+    dl = _dl(fake_live_manager, tmp_path, range_server.url)
+    final = tmp_path / "file.bin"
+    assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
+    assert not legacy.exists()
+    assert _sha(final.read_bytes()) == _sha(range_server.data)
+
+
+def test_legacy_stem_temp_with_manifest_is_left_alone(range_server, tmp_path, fake_live_manager):
+    legacy = tmp_path / "file.temp"                    # could be a live partial of "file"
+    legacy.write_bytes(b"x")
+    (tmp_path / "file.temp.parts").write_text("{}")
+    dl = _dl(fake_live_manager, tmp_path, range_server.url)
+    assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.SUCCESS
+    assert legacy.exists() and (tmp_path / "file.temp.parts").exists()

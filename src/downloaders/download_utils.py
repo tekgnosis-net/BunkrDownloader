@@ -24,6 +24,7 @@ from .transfer_manifest import (
     save_manifest,
     sync_data,
     sync_file,
+    temp_path_for,
 )
 
 DEFAULT_UNKNOWN_SIZE_BASELINE = 50 * 1024 * 1024
@@ -256,7 +257,7 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
 ) -> DownloadOutcome:
     """Save the file from the response to the specified path.
 
-    Adds a `.temp` extension for in-flight downloads and attempts to infer the
+    Writes to ``<final name>.temp`` while in flight and attempts to infer the
     content length so live progress can be reported accurately. When the server
     omits the header, a best-effort estimate is used so the UI still reflects
     activity while streaming. The optional ``download_headers`` are forwarded
@@ -287,8 +288,8 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
             "Server did not provide a content length. Progress will be estimated.",
         )
 
-    # Initialize a temporary download path with the .temp extension
-    temp_download_path = Path(download_path).with_suffix(".temp")
+    # In-flight bytes live in "<final name>.temp" until the final rename.
+    temp_download_path = temp_path_for(download_path)
     manifest_file = manifest_path(temp_download_path) if manifest is not None else None
     chunk_size = get_chunk_size(file_size or 0)
     total_downloaded = resume_from

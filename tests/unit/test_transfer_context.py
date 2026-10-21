@@ -14,7 +14,7 @@ from src.downloaders.connection_governor import ConnectionGovernor
 from src.downloaders.download_utils import DownloadOutcome
 from src.downloaders.media_downloader import MediaDownloader
 from src.downloaders.transfer_context import TransferContext, make_transfer_context
-from src.downloaders.transfer_manifest import load_manifest, manifest_path
+from src.downloaders.transfer_manifest import load_manifest, manifest_path, temp_path_for
 
 
 def _args(**overrides) -> Namespace:
@@ -40,10 +40,6 @@ def _dl(live, tmp_path, url, *, ctx=None, filename="file.bin", **overrides):
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-def _temp(final):
-    return final.with_suffix(".temp")
 
 
 # ---- context factory ---------------------------------------------------------
@@ -166,10 +162,10 @@ def test_cancel_mid_segmented_transfer_stops_and_keeps_resumable_partial(
     assert any(e == "Download stopped" for e, _ in fake_live_manager.logs)
     # Each segment needs ~0.4 s in full; stopping "within a few chunks" is far quicker.
     assert finished - stamp["at"] < 0.3
-    saved = load_manifest(manifest_path(_temp(final)))
+    saved = load_manifest(manifest_path(temp_path_for(final)))
     assert saved is not None and 0 < saved.bytes_done < len(range_server.data)
     assert not final.exists() and range_server.get_count == 4
-    on_disk = _temp(final).read_bytes()
+    on_disk = temp_path_for(final).read_bytes()
     for seg in saved.segments:                            # the manifest only claims real bytes
         lo, hi = seg.start, seg.start + seg.done
         assert on_disk[lo:hi] == range_server.data[lo:hi]
@@ -185,9 +181,10 @@ def test_cancel_mid_single_stream_stops_and_keeps_resumable_partial(
     failed, outcomes, finished = _run_cancelled(dl)
     assert outcomes == [DownloadOutcome.RETRYABLE_FAILURE] and failed is None
     assert finished - stamp["at"] < 0.3                   # the whole file needs ~0.4 s
-    saved = load_manifest(manifest_path(_temp(final)))
+    saved = load_manifest(manifest_path(temp_path_for(final)))
     assert saved is not None and 0 < saved.bytes_done < len(range_server.data)
-    assert _temp(final).read_bytes()[: saved.bytes_done] == range_server.data[: saved.bytes_done]
+    done = saved.bytes_done
+    assert temp_path_for(final).read_bytes()[:done] == range_server.data[:done]
     assert range_server.get_count == 1                    # no retry after the cancel
 
 
@@ -202,7 +199,7 @@ def test_cancel_returns_promptly(range_server, tmp_path, fake_live_manager):
     timer.join()
     assert outcome is DownloadOutcome.RETRYABLE_FAILURE
     assert elapsed < 0.15 + 1.0             # a full transfer needs ~0.4 s+ per segment
-    saved = load_manifest(manifest_path(_temp(tmp_path / "file.bin")))
+    saved = load_manifest(manifest_path(temp_path_for(tmp_path / "file.bin")))
     assert saved is not None and 0 < saved.bytes_done < len(range_server.data)
 
 
