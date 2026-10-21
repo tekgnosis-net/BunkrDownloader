@@ -149,7 +149,7 @@ def test_segmented_403_requests_link_refresh_and_keeps_progress(range_server, tm
     cancel = threading.Event()
     outcome, temp, manifest, _ = _run(range_server, tmp_path, cancel_event=cancel)
     assert outcome is SegmentedOutcome.NEEDS_REFRESH
-    assert not cancel.is_set()                
+    assert not cancel.is_set()
     _assert_prefixes_match(temp, manifest, range_server.data)
     saved = load_manifest(manifest_path(temp))
     assert saved is not None and saved.bytes_done == manifest.bytes_done > 0
