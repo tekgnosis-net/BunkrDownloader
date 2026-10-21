@@ -42,6 +42,14 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 ## Latest Release Updates
 
+**v0.16.0** — October 2026
+
+- **Process-wide connection ceiling**: `MAX_TOTAL_CONNECTIONS` (0–256, default `0` = none) caps simultaneous download connections across *all* running jobs, on top of each job's own `MAX_CONCURRENT_CONNECTIONS`. Set it if Bunkr rate-limits your IP when several jobs run together.
+- **HTTP timeouts are knobs**: `PROBE_TIMEOUT_SECONDS` (HEAD probe), `TRANSFER_TIMEOUT_SECONDS` (segment and single-stream GETs) and `ITEM_PAGE_TIMEOUT_SECONDS` (item page + signing request on link refresh) replace the former hard-coded values. Env-only; forwarded in both compose files.
+- **Durability hardening**: a failed `fdatasync` now stops the file (the partial is kept, nothing is claimed in the manifest afterwards) instead of letting a later save vouch for bytes whose writeback failed. A manifest that merely cannot be *saved* still only costs resumability.
+- **Resume edge cases**: a partial that proves invalid after a failed size probe restarts as a plain single stream instead of re-planning from the stale size; a `<stem>.temp` modified since the job started is never mistaken for a leftover of an older build.
+- **Frontend**: persisted settings are read on first render, removing a dev-mode window where a default could overwrite a stored value.
+
 **v0.15.0** — October 2026
 
 - **Segmented downloads**: large files are fetched by several range workers at once (default `DOWNLOAD_SEGMENTS=4`, files under `SEGMENT_MIN_FILE_SIZE_MB=32` stay single-stream). Each job has its own connection cap (`MAX_CONCURRENT_CONNECTIONS`, default `12`).
