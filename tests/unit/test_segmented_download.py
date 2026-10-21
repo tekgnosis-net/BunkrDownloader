@@ -118,20 +118,26 @@ def test_segmented_full_transfer_matches_source(range_server, tmp_path):
     assert range_server.get_count == 4
 
 
-def test_segmented_resumes_from_manifest(range_server, tmp_path):
-    manifest = TransferManifest.plan(len(range_server.data), 4, etag=range_server.etag)
+def _seed_partial(server, tmp_path, *, half_second: bool) -> TransferManifest:
+    """Write segment 0 (and optionally half of segment 1) to disk as prior progress."""
+    manifest = TransferManifest.plan(len(server.data), 4, etag=server.etag)
     temp = tmp_path / "file.bin.temp"
-    # Pretend segment 0 is fully on disk and segment 1 half done; write those bytes ourselves.
     with temp.open("wb") as fh:
-        fh.truncate(len(range_server.data))
+        fh.truncate(len(server.data))
         s0, s1 = manifest.segments[0], manifest.segments[1]
         fh.seek(s0.start)
-        fh.write(range_server.data[s0.start:s0.end + 1])
+        fh.write(server.data[s0.start:s0.end + 1])
         s0.done = s0.length
-        half = s1.length // 2
-        fh.seek(s1.start)
-        fh.write(range_server.data[s1.start:s1.start + half])
-        s1.done = half
+        if half_second:
+            half = s1.length // 2
+            fh.seek(s1.start)
+            fh.write(server.data[s1.start:s1.start + half])
+            s1.done = half
+    return manifest
+
+
+def test_segmented_resumes_from_manifest(range_server, tmp_path):
+    manifest = _seed_partial(range_server, tmp_path, half_second=True)
     outcome, temp, manifest, _ = _run(range_server, tmp_path, manifest=manifest)
     assert outcome is SegmentedOutcome.COMPLETE
     assert _sha(temp) == hashlib.sha256(range_server.data).hexdigest()
@@ -146,14 +152,22 @@ def test_segmented_falls_back_when_server_ignores_range(range_server, tmp_path):
 
 
 def test_segmented_403_requests_link_refresh_and_keeps_progress(range_server, tmp_path):
-    range_server.forbid_from_request = 3        # first two segment GETs succeed, rest 403
+    # Segment 0 is already on disk; of the three live workers the first GET to arrive
+    # succeeds and the rest get 403. Which worker that is depends on scheduling, and the
+    # fail-fast stop may halt the others before they write a byte, so the deterministic
+    # claim is: nothing already recorded is lost, and whatever landed is saved.
+    seeded = _seed_partial(range_server, tmp_path, half_second=False)
+    range_server.forbid_from_request = 2
     cancel = threading.Event()
-    outcome, temp, manifest, _ = _run(range_server, tmp_path, cancel_event=cancel)
+    outcome, temp, manifest, _ = _run(range_server, tmp_path, manifest=seeded,
+                                      cancel_event=cancel)
     assert outcome is SegmentedOutcome.NEEDS_REFRESH
     assert not cancel.is_set()
     _assert_prefixes_match(temp, manifest, range_server.data)
     saved = load_manifest(manifest_path(temp))
-    assert saved is not None and saved.bytes_done == manifest.bytes_done > 0
+    assert saved is not None and saved.bytes_done == manifest.bytes_done
+    assert manifest.segments[0].complete
+    assert manifest.bytes_done >= manifest.segments[0].length
     # second run with a "fresh" URL completes from where it left off
     range_server.forbid_from_request = None
     range_server.get_count = 0
