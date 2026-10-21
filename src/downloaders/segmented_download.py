@@ -5,6 +5,7 @@ See docs/superpowers/specs/2026-10-21-segmented-resumable-downloads-design.md.
 
 from __future__ import annotations
 
+import errno
 import logging
 import math
 import os
@@ -96,6 +97,10 @@ class _RangeUnsupported(Exception):
     """Server answered 200 to a Range request."""
 
 
+class _Stopped(Exception):
+    """Worker halted by our own fail-fast; a side effect, never an outcome."""
+
+
 class _ManifestInvalid(Exception):
     """416 or Content-Range disagreement: local offsets are wrong."""
 
@@ -130,23 +135,27 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         self._lock = threading.Lock()
         self._total = manifest.bytes_done
         self._fd: int | None = None
+        self._stop = threading.Event()
 
     # ---- public -----------------------------------------------------------
 
     def run(self) -> SegmentedOutcome:
         """Run all incomplete segments; always leaves a consistent manifest on disk."""
         try:
-            self._prepare_file()
+            file_ok = self._prepare_file()
         except OSError as os_err:
             logging.warning("Cannot prepare %s: %s", self.temp_path, os_err)
             self._close_fd()
             return SegmentedOutcome.TERMINAL
+        if not file_ok:
+            self._close_fd()
+            return SegmentedOutcome.MANIFEST_INVALID
 
         pending = [s for s in self.manifest.segments if not s.complete]
         if not pending:
-            self._flush()
+            flushed = self._try_flush()
             self._close_fd()
-            return SegmentedOutcome.COMPLETE
+            return SegmentedOutcome.COMPLETE if flushed else SegmentedOutcome.TERMINAL
 
         outcome = SegmentedOutcome.COMPLETE
         try:
@@ -155,22 +164,26 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
                 for future in futures:
                     try:
                         future.result()
-                    except (Cancelled, _LinkExpired, _RangeUnsupported, _ManifestInvalid,
-                            OSError, RequestException, ChunkedEncodingError) as exc:
+                    except (Cancelled, _Stopped, _LinkExpired, _RangeUnsupported,
+                            _ManifestInvalid, OSError, RequestException,
+                            ChunkedEncodingError) as exc:
                         result = _classify(exc)
                         outcome = _worst(outcome, result)
                         if result is not SegmentedOutcome.RETRYABLE:
-                            self.cancel_event.set()
+                            self._stop.set()   # private fail-fast; caller's event untouched
         finally:
-            self._flush()
+            flushed = self._try_flush()
             self._close_fd()
+        if not flushed:
+            return SegmentedOutcome.TERMINAL
 
         if outcome is SegmentedOutcome.COMPLETE and not self.manifest.complete:
             return SegmentedOutcome.RETRYABLE
         if outcome is SegmentedOutcome.RANGE_UNSUPPORTED:
             for seg in self.manifest.segments:
                 seg.done = 0
-            self._flush()
+            if not self._try_flush():
+                return SegmentedOutcome.TERMINAL
         return outcome
 
     # ---- internals ----------------------------------------------------------
@@ -180,11 +193,24 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
             os.close(self._fd)
             self._fd = None
 
-    def _prepare_file(self) -> None:
-        flags = os.O_RDWR | os.O_CREAT
-        self._fd = os.open(self.temp_path, flags, 0o644)
-        if os.fstat(self._fd).st_size != self.manifest.size:
+    def _prepare_file(self) -> bool:
+        """Open and pre-size the temp file; False if recorded progress has no backing data."""
+        existed = self.temp_path.exists()
+        self._fd = os.open(self.temp_path, os.O_RDWR | os.O_CREAT, 0o644)
+        intact = existed and os.fstat(self._fd).st_size == self.manifest.size
+        if not intact:
+            if self.manifest.bytes_done > 0:
+                return False
             os.ftruncate(self._fd, self.manifest.size)
+        return True
+
+    def _try_flush(self) -> bool:
+        try:
+            self._flush()
+        except OSError as os_err:
+            logging.warning("Cannot save manifest for %s: %s", self.temp_path, os_err)
+            return False
+        return True
 
     def _flush(self) -> None:
         with self._lock:
@@ -195,29 +221,44 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
             self._total += delta
             size = self.manifest.size
             pct = min(100.0, self._total / size * 100) if size else 0.0
-        self.progress_manager.update_task(self.task, completed=pct)
+            self.progress_manager.update_task(self.task, completed=pct)
 
-    def _fetch_segment(self, segment: Segment) -> None:
+    def _check_stop(self) -> None:
         if self.cancel_event.is_set():
             raise Cancelled()
+        if self._stop.is_set():
+            raise _Stopped()
+
+    def _write_chunk(self, segment: Segment, chunk: bytes) -> int:
+        """Write ``chunk`` at the segment cursor, looping over short writes."""
+        assert self._fd is not None
+        view = memoryview(chunk[: segment.remaining])
+        total = 0
+        while total < len(view):
+            written = os.pwrite(self._fd, view[total:], segment.next_offset)
+            if written <= 0:
+                raise OSError(errno.EIO, "pwrite wrote 0 bytes")
+            segment.done += written
+            total += written
+            self._report(written)
+        return total
+
+    def _fetch_segment(self, segment: Segment) -> None:
+        self._check_stop()
         headers = dict(self.headers)
+        headers["Accept-Encoding"] = "identity"
         headers["Range"] = f"bytes={segment.next_offset}-{segment.end}"
         with self.governor.slot(cancel_event=self.cancel_event):
+            self._check_stop()
             with requests.get(self.url, headers=headers, stream=True, timeout=self.timeout) as resp:
                 self._check_response(resp, segment)
                 chunk_size = get_chunk_size(segment.length)
                 since_flush = 0
                 for chunk in resp.iter_content(chunk_size=chunk_size):
-                    if self.cancel_event.is_set():
-                        raise Cancelled()
+                    self._check_stop()
                     if not chunk:
                         continue
-                    chunk = chunk[: segment.remaining]
-                    assert self._fd is not None
-                    written = os.pwrite(self._fd, chunk, segment.next_offset)
-                    segment.done += written
-                    since_flush += written
-                    self._report(written)
+                    since_flush += self._write_chunk(segment, chunk)
                     if since_flush >= self.flush_bytes:
                         self._flush()
                         since_flush = 0
@@ -244,8 +285,10 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
 _SEVERITY = {
     SegmentedOutcome.COMPLETE: 0,
     SegmentedOutcome.RETRYABLE: 1,
-    SegmentedOutcome.CANCELLED: 2,       # below real failures: siblings cancelled by our
-    SegmentedOutcome.NEEDS_REFRESH: 3,   # own fail-fast must not mask the root cause
+    # CANCELLED outranks RETRYABLE: a user cancel must not be retried; real
+    # protocol/disk failures outrank both.
+    SegmentedOutcome.CANCELLED: 2,
+    SegmentedOutcome.NEEDS_REFRESH: 3,
     SegmentedOutcome.RANGE_UNSUPPORTED: 4,
     SegmentedOutcome.MANIFEST_INVALID: 5,
     SegmentedOutcome.TERMINAL: 6,
@@ -259,6 +302,8 @@ def _worst(current: SegmentedOutcome, new: SegmentedOutcome) -> SegmentedOutcome
 
 def _classify(exc: Exception) -> SegmentedOutcome:
     """Map a worker exception to the outcome it represents."""
+    if isinstance(exc, _Stopped):
+        return SegmentedOutcome.COMPLETE   # side effect of another failure: no vote
     if isinstance(exc, Cancelled):
         return SegmentedOutcome.CANCELLED
     if isinstance(exc, _LinkExpired):

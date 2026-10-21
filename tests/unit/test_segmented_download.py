@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 from pathlib import Path
 
@@ -96,6 +97,13 @@ def _sha_of(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _assert_prefixes_match(temp, manifest, data):
+    on_disk = temp.read_bytes()
+    for seg in manifest.segments:
+        lo, hi = seg.start, seg.start + seg.done
+        assert on_disk[lo:hi] == data[lo:hi]
+
+
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -138,8 +146,11 @@ def test_segmented_falls_back_when_server_ignores_range(range_server, tmp_path):
 
 def test_segmented_403_requests_link_refresh_and_keeps_progress(range_server, tmp_path):
     range_server.forbid_from_request = 3        # first two segment GETs succeed, rest 403
-    outcome, temp, manifest, _ = _run(range_server, tmp_path)
+    cancel = threading.Event()
+    outcome, temp, manifest, _ = _run(range_server, tmp_path, cancel_event=cancel)
     assert outcome is SegmentedOutcome.NEEDS_REFRESH
+    assert not cancel.is_set()                
+    _assert_prefixes_match(temp, manifest, range_server.data)
     saved = load_manifest(manifest_path(temp))
     assert saved is not None and saved.bytes_done == manifest.bytes_done > 0
     # second run with a "fresh" URL completes from where it left off
@@ -150,20 +161,26 @@ def test_segmented_403_requests_link_refresh_and_keeps_progress(range_server, tm
 
 
 def test_segmented_mid_stream_abort_is_retryable_and_resumable(range_server, tmp_path):
-    range_server.abort_once_after = 100_000
-    outcome, temp, _, _ = _run(range_server, tmp_path)
+    range_server.abort_once_after = 300_000
+    outcome, temp, manifest, _ = _run(range_server, tmp_path)
     assert outcome is SegmentedOutcome.RETRYABLE
+    _assert_prefixes_match(temp, manifest, range_server.data)
     saved = load_manifest(manifest_path(temp))
     assert saved is not None and 0 < saved.bytes_done < len(range_server.data)
+    assert any(0 < s.done < s.length for s in saved.segments)   # partial bytes persisted
+    incomplete = sum(1 for s in saved.segments if not s.complete)
+    range_server.get_count = 0
     outcome2, temp, _, _ = _run(range_server, tmp_path, manifest=saved)
+    assert range_server.get_count == incomplete
     assert outcome2 is SegmentedOutcome.COMPLETE and _sha(temp) == _sha_of(range_server.data)
 
 
 def test_segmented_cancel_leaves_resumable_manifest(range_server, tmp_path):
     cancel = threading.Event()
     cancel.set()                                   # cancelled before the first chunk
-    outcome, temp, _, _ = _run(range_server, tmp_path, cancel_event=cancel)
+    outcome, temp, manifest, _ = _run(range_server, tmp_path, cancel_event=cancel)
     assert outcome is SegmentedOutcome.CANCELLED
+    _assert_prefixes_match(temp, manifest, range_server.data)
     saved = load_manifest(manifest_path(temp))
     assert saved is not None and saved.bytes_done == 0
     assert temp.stat().st_size == len(range_server.data)
@@ -182,9 +199,10 @@ def test_segmented_disk_error_is_terminal_and_keeps_manifest(range_server, tmp_p
     def boom(*_a, **_k):
         raise OSError(28, "No space left on device")
     monkeypatch.setattr(mod.os, "pwrite", boom)
-    outcome, temp, _, _ = _run(range_server, tmp_path)
+    outcome, temp, manifest, _ = _run(range_server, tmp_path)
     assert outcome is SegmentedOutcome.TERMINAL
     assert manifest_path(temp).exists()
+    _assert_prefixes_match(temp, manifest, range_server.data)
 
 
 def test_segmented_416_marks_manifest_invalid(range_server, tmp_path):
@@ -195,3 +213,47 @@ def test_segmented_416_marks_manifest_invalid(range_server, tmp_path):
     manifest = TransferManifest.plan(len(range_server.data) + 10_000_000, 2, etag=range_server.etag)
     outcome, _, _, _ = _run(range_server, tmp_path, manifest=manifest)
     assert outcome is SegmentedOutcome.MANIFEST_INVALID
+
+
+def test_segmented_short_pwrite_still_writes_every_byte(range_server, tmp_path, monkeypatch):
+    real_pwrite = os.pwrite
+
+    def short(fd, data, offset):
+        return real_pwrite(fd, bytes(data[:1000]), offset)
+    monkeypatch.setattr(os, "pwrite", short)
+    outcome, temp, _, _ = _run(range_server, tmp_path)
+    assert outcome is SegmentedOutcome.COMPLETE
+    assert _sha(temp) == _sha_of(range_server.data)
+
+
+def test_segmented_zero_byte_pwrite_is_terminal(range_server, tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "pwrite", lambda *_a: 0)
+    outcome, _, _, _ = _run(range_server, tmp_path)
+    assert outcome is SegmentedOutcome.TERMINAL
+
+
+def test_segmented_final_flush_failure_is_terminal_and_closes_fd(range_server, tmp_path,
+                                                                 monkeypatch):
+    import src.downloaders.segmented_download as mod  # pylint: disable=import-outside-toplevel
+
+    real_save = mod.save_manifest
+
+    def flaky(manifest, path):
+        if threading.current_thread() is threading.main_thread():   # only the final flush
+            raise OSError(28, "No space left on device")
+        real_save(manifest, path)
+    monkeypatch.setattr(mod, "save_manifest", flaky)
+    temp = tmp_path / "file.bin.temp"
+    manifest = TransferManifest.plan(len(range_server.data), 4, etag=range_server.etag)
+    dl = SegmentedDownloader(url=range_server.url, headers={}, temp_path=temp, manifest=manifest,
+                             progress_manager=_PM(), task=0, flush_bytes=256 * 1024)
+    assert dl.run() is SegmentedOutcome.TERMINAL
+    assert dl._fd is None  # pylint: disable=protected-access
+
+
+def test_segmented_missing_temp_with_progress_is_manifest_invalid(range_server, tmp_path):
+    manifest = TransferManifest.plan(len(range_server.data), 4, etag=range_server.etag)
+    manifest.segments[0].done = 1000          # claims progress, but no temp file exists
+    outcome, _, _, _ = _run(range_server, tmp_path, manifest=manifest)
+    assert outcome is SegmentedOutcome.MANIFEST_INVALID
+    assert range_server.get_count == 0         # nothing fetched on top of missing data

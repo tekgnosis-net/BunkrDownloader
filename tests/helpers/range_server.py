@@ -89,7 +89,13 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
                 self.end_headers()
                 with server._lock:  # pylint: disable=protected-access
                     abort_at = None
-                    if server.abort_once_after is not None and not server._aborted_once:  # pylint: disable=protected-access
+                    will_abort = (
+                        server.abort_once_after is not None
+                        and not server._aborted_once  # pylint: disable=protected-access
+                        and server.abort_once_after < len(body)
+                    )
+                    if will_abort:
+                        server._aborted_once = True  # pylint: disable=protected-access
                         abort_at = server.abort_once_after
                 self._send_body(body, abort_at)
 
@@ -99,9 +105,6 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
                     for offset in range(0, len(body), CHUNK_SIZE):
                         chunk = body[offset:offset + CHUNK_SIZE]
                         if abort_at is not None and sent + len(chunk) > abort_at:
-                            # Only a cut inside the body counts as the one-shot fault firing.
-                            with server._lock:  # pylint: disable=protected-access
-                                server._aborted_once = True  # pylint: disable=protected-access
                             self.wfile.write(chunk[: max(0, abort_at - sent)])
                             self.wfile.flush()
                             self.close_connection = True
