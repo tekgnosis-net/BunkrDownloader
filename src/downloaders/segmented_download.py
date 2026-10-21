@@ -25,7 +25,13 @@ from src.managers.progress_manager import ProgressManager
 from .connection_governor import GOVERNOR, Cancelled, ConnectionGovernor
 from .download_utils import MANIFEST_FLUSH_BYTES, get_chunk_size
 from .remote_probe import RemoteInfo
-from .transfer_manifest import Segment, TransferManifest, manifest_path, save_manifest
+from .transfer_manifest import (
+    Segment,
+    TransferManifest,
+    manifest_path,
+    save_manifest,
+    sync_data,
+)
 
 
 class TransferMode(Enum):
@@ -135,6 +141,10 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         self._total = manifest.bytes_done
         self._fd: int | None = None
         self._stop = threading.Event()
+        # Flush ordering: a snapshot taken earlier never overwrites a newer save.
+        self._save_order = threading.Lock()
+        self._generation = 0
+        self._saved_generation = 0
 
     # ---- public -----------------------------------------------------------
 
@@ -212,11 +222,30 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         return True
 
     def _flush(self) -> None:
-        with self._lock:
-            save_manifest(self.manifest, manifest_path(self.temp_path))
+        """Snapshot progress, make the data durable, then save the snapshot.
 
-    def _report(self, delta: int) -> None:
+        ``done`` values are captured under ``_lock``; every byte they count
+        was ``pwrite``-n before the capture, so the ``fdatasync`` that follows
+        covers them. No lock is held across the sync (it can take seconds on
+        a NAS). An ``OSError`` from the sync or the save propagates: callers
+        treat it as a flush failure.
+        """
         with self._lock:
+            self._generation += 1
+            generation = self._generation
+            snapshot = self.manifest.snapshot()
+        if self._fd is not None:
+            sync_data(self._fd)
+        with self._save_order:
+            if generation < self._saved_generation:
+                return
+            save_manifest(snapshot, manifest_path(self.temp_path))
+            self._saved_generation = generation
+
+    def _advance(self, segment: Segment, delta: int) -> None:
+        """Count ``delta`` freshly written bytes for ``segment`` and report progress."""
+        with self._lock:
+            segment.done += delta
             self._total += delta
             size = self.manifest.size
             pct = min(100.0, self._total / size * 100) if size else 0.0
@@ -237,9 +266,8 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
             written = os.pwrite(self._fd, view[total:], segment.next_offset)
             if written <= 0:
                 raise OSError(errno.EIO, "pwrite wrote 0 bytes")
-            segment.done += written
             total += written
-            self._report(written)
+            self._advance(segment, written)
         return total
 
     def _fetch_segment(self, segment: Segment) -> None:

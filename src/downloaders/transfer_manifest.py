@@ -4,6 +4,12 @@
 the remote size/ETag and, per segment, how many bytes have been written
 contiguously from the segment start. Workers only ever append within their
 own range, so ``done`` is always a prefix length — there are no holes.
+
+Durability rule: a manifest may only claim bytes that are already durable.
+Every writer therefore calls :func:`sync_data` on the data file *after*
+deciding what to record and *before* :func:`save_manifest`; a host crash can
+then lose progress (bytes beyond ``done`` are re-fetched) but never make the
+manifest vouch for data that never reached the disk.
 """
 
 from __future__ import annotations
@@ -81,6 +87,15 @@ class TransferManifest:
             start += length
         return cls(size=size, etag=etag, segments=segments, url_origin=url_origin)
 
+    def snapshot(self) -> TransferManifest:
+        """Independent copy (segments included) for saving outside a lock."""
+        return TransferManifest(
+            size=self.size,
+            etag=self.etag,
+            segments=[Segment(s.start, s.end, s.done) for s in self.segments],
+            url_origin=self.url_origin,
+        )
+
     @property
     def bytes_done(self) -> int:
         """Bytes on disk across all segments."""
@@ -149,12 +164,33 @@ def manifest_path(temp_path: Path) -> Path:
     return temp_path.with_name(temp_path.name + ".parts")
 
 
+def sync_data(fd: int) -> None:
+    """Flush a file descriptor's data to stable storage.
+
+    ``os.fdatasync`` where the platform has it (Linux), ``os.fsync``
+    otherwise (macOS, Windows). Raises ``OSError`` like the underlying call.
+    """
+    sync = getattr(os, "fdatasync", None) or os.fsync
+    sync(fd)
+
+
+def sync_file(path: Path) -> None:
+    """Open ``path`` briefly and :func:`sync_data` it (used before a rename)."""
+    flags = os.O_RDONLY if hasattr(os, "fdatasync") else os.O_RDWR
+    fd = os.open(path, flags)
+    try:
+        sync_data(fd)
+    finally:
+        os.close(fd)
+
+
 def save_manifest(manifest: TransferManifest, path: Path) -> None:
     """Write the manifest atomically (temp file + ``os.replace``).
 
-    Safe to call from multiple threads; atomic against process death (no
-    fsync, so not against power loss). A failed write removes the temp file
-    and re-raises.
+    Safe to call from multiple threads; atomic against process death. The
+    manifest file itself is not synced: losing it on power failure only
+    forgets progress. Callers must :func:`sync_data` the data file first (see
+    the module docstring). A failed write removes the temp file and re-raises.
     """
     tmp = path.with_name(path.name + ".tmp")
     with _SAVE_LOCK:

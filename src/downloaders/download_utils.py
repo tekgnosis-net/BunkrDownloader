@@ -8,7 +8,7 @@ import shutil
 from concurrent.futures import Future, ThreadPoolExecutor
 from enum import IntEnum
 from pathlib import Path
-from typing import Callable
+from typing import IO, Callable
 
 import requests
 from requests import Response
@@ -17,7 +17,13 @@ from requests.exceptions import ChunkedEncodingError, RequestException
 from src.config import DOWNLOAD_HEADERS, LARGE_FILE_CHUNK_SIZE, THRESHOLDS
 from src.managers.progress_manager import ProgressManager
 
-from .transfer_manifest import TransferManifest, manifest_path, save_manifest
+from .transfer_manifest import (
+    TransferManifest,
+    manifest_path,
+    save_manifest,
+    sync_data,
+    sync_file,
+)
 
 DEFAULT_UNKNOWN_SIZE_BASELINE = 50 * 1024 * 1024
 MANIFEST_FLUSH_BYTES = 8 * 1024 * 1024
@@ -138,6 +144,14 @@ def _remove_quietly(path: Path | None) -> None:
         pass
 
 
+def _persist_manifest(file: IO[bytes], manifest: TransferManifest, path: Path) -> None:
+    """Make every byte written so far durable, then record it in the manifest."""
+
+    file.flush()
+    sync_data(file.fileno())
+    save_manifest(manifest, path)
+
+
 class _ProgressEstimator:  # pylint: disable=too-few-public-methods
     """Track a rolling progress estimate when file size is unknown."""
 
@@ -204,25 +218,18 @@ def finalise_download(
     99% stall.
     """
 
-    if file_size:
-        if total_downloaded != file_size:
-            _log_once(
-                progress_manager,
-                f"Short read for {final_path}: {total_downloaded}/{file_size} bytes; will retry.",
-            )
-            progress_manager.update_task(task, completed=0, visible=False)
-            return DownloadOutcome.RETRYABLE_FAILURE
-        try:
-            shutil.move(temp_path, final_path)
-        except OSError as os_err:
-            _log_once(progress_manager, f"Could not finalise {final_path}: {os_err}")
-            progress_manager.update_task(task, completed=0, visible=False)
-            return DownloadOutcome.RETRYABLE_FAILURE
-        _remove_quietly(manifest_file)
-        progress_manager.update_task(task, completed=100)
-        return DownloadOutcome.SUCCESS
+    if file_size and total_downloaded != file_size:
+        _log_once(
+            progress_manager,
+            f"Short read for {final_path}: {total_downloaded}/{file_size} bytes; will retry.",
+        )
+        progress_manager.update_task(task, completed=0, visible=False)
+        return DownloadOutcome.RETRYABLE_FAILURE
 
     try:
+        # Durable data before the rename: after a host crash the final name
+        # must never point at a file whose tail was still in the page cache.
+        sync_file(temp_path)
         shutil.move(temp_path, final_path)
     except OSError as os_err:
         _log_once(progress_manager, f"Could not finalise {final_path}: {os_err}")
@@ -290,15 +297,17 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
         with temp_download_path.open("r+b" if resume_from else "wb") as file:
             if resume_from:
                 file.seek(resume_from)
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk is not None:
+            try:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk is None:
+                        continue
                     file.write(chunk)
                     total_downloaded += len(chunk)
                     since_flush += len(chunk)
                     if manifest is not None:
                         manifest.segments[0].done = total_downloaded
                         if since_flush >= MANIFEST_FLUSH_BYTES:
-                            save_manifest(manifest, manifest_file)
+                            _persist_manifest(file, manifest, manifest_file)
                             since_flush = 0
                     estimator = _emit_progress(
                         progress_manager,
@@ -310,30 +319,29 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
                     if head_future and file_size is None and head_future.done():
                         head_length = head_future.result()
                         head_future = None
-
                         if head_length:
                             file_size = head_length
                             estimator = None
                             progress_manager.update_task(
                                 task,
-                                completed=min(
-                                    100.0,
-                                    (total_downloaded / file_size) * 100,
-                                ),
+                                completed=min(100.0, (total_downloaded / file_size) * 100),
                             )
 
-    # Handle partial downloads caused by network interruptions. The task would
-    # otherwise sit frozen at its last estimate — hide it and log so retry
-    # bookkeeping can reactivate it on the next attempt.
-    except ChunkedEncodingError:
-        if manifest is not None:
-            save_manifest(manifest, manifest_file)
-        _log_once(
-            progress_manager,
-            f"Partial transfer for {download_path}; the stream ended mid-chunk.",
-        )
-        progress_manager.update_task(task, completed=0, visible=False)
-        return DownloadOutcome.RETRYABLE_FAILURE
+            # Handle partial downloads caused by network interruptions. The task
+            # would otherwise sit frozen at its last estimate — hide it and log
+            # so retry bookkeeping can reactivate it on the next attempt.
+            except ChunkedEncodingError:
+                if manifest is not None:
+                    _persist_manifest(file, manifest, manifest_file)
+                _log_once(
+                    progress_manager,
+                    f"Partial transfer for {download_path}; the stream ended mid-chunk.",
+                )
+                progress_manager.update_task(task, completed=0, visible=False)
+                return DownloadOutcome.RETRYABLE_FAILURE
+
+            if manifest is not None:
+                _persist_manifest(file, manifest, manifest_file)
 
     finally:
         if head_executor:
@@ -349,9 +357,6 @@ def save_file_with_progress(  # pylint: disable=too-many-locals,too-many-argumen
             head_length = None
         if head_length:
             file_size = head_length
-
-    if manifest is not None:
-        save_manifest(manifest, manifest_file)
 
     return finalise_download(
         file_size=file_size,
