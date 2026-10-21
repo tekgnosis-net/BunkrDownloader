@@ -22,6 +22,8 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
         self.ignore_range = False
         self.no_ranges = False
         self.forbid_from_request: int | None = None
+        self.fail_status_from_request: int | None = None   # GETs from this count on fail ...
+        self.fail_status = 503                              # ... with this status
         self.abort_once_after: int | None = None
         self.chunk_delay = 0.0          # seconds slept after each body chunk (throttle)
         self.get_count = 0
@@ -73,6 +75,12 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
             def _respond_get(self, count: int) -> None:
                 if server.forbid_from_request is not None and count >= server.forbid_from_request:
                     self.send_response(403)
+                    self._common_headers(0)
+                    self.end_headers()
+                    return
+                failing = server.fail_status_from_request
+                if failing is not None and count >= failing:
+                    self.send_response(server.fail_status)
                     self._common_headers(0)
                     self.end_headers()
                     return
@@ -142,6 +150,8 @@ class RangeServer:  # pylint: disable=too-many-instance-attributes
         self.ignore_range = False
         self.no_ranges = False
         self.forbid_from_request = None
+        self.fail_status_from_request = None
+        self.fail_status = 503
         self.abort_once_after = None
         self.chunk_delay = 0.0
         self.get_count = 0

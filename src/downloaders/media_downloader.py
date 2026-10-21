@@ -52,6 +52,7 @@ from .transfer_context import TransferContext, make_transfer_context
 from .transfer_manifest import (
     TransferManifest,
     discard_partial,
+    etags_conflict,
     load_manifest,
     manifest_matches_remote,
     manifest_path,
@@ -118,10 +119,8 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
 
         temp_path = Path(final_path).with_suffix(".temp")
         remote = probe_remote(self.download_info.download_link, headers)
+        existing, remote = self._validate_existing(temp_path, remote)
         self._remote = remote
-        existing, keep_partial = self._validate_existing(temp_path, remote)
-        if keep_partial:
-            return DownloadOutcome.RETRYABLE_FAILURE
         plan = plan_transfer(
             remote, settings, existing=existing, url_origin=self.download_info.item_page,
         )
@@ -138,24 +137,33 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
 
     def _validate_existing(
         self, temp_path: Path, remote: RemoteInfo,
-    ) -> tuple[TransferManifest | None, bool]:
-        """Load the on-disk manifest; return ``(usable_manifest, probe_failed_keep_partial)``."""
+    ) -> tuple[TransferManifest | None, RemoteInfo]:
+        """Load the on-disk manifest; return ``(usable_manifest, remote_to_plan_with)``.
+
+        When the HEAD probe failed but a structurally valid manifest with
+        progress exists, the transfer proceeds from the manifest's own
+        size/ETag: every 206 is then checked against them (``Content-Range``
+        total and, when both sides have one, the ETag), so a changed remote
+        is still caught before any byte is trusted.
+        """
         existing = load_manifest(manifest_path(temp_path))
         if existing is None:
-            return None, False
+            return None, remote
         if remote.size is None:
             if existing.bytes_done:
                 # A failed probe says nothing about the remote: never throw away progress.
                 self.live_manager.update_log(
                     event="Download progress",
                     details=(
-                        f"Probe failed for {self.download_info.filename}; "
-                        "keeping partial for retry"
+                        f"Probe failed for {self.download_info.filename}; resuming from "
+                        "the on-disk partial and validating each range response."
                     ),
                 )
-                return None, True
+                return existing, RemoteInfo(
+                    size=existing.size, etag=existing.etag, accepts_ranges=True,
+                )
             discard_partial(temp_path)
-            return None, False
+            return None, remote
         if not manifest_matches_remote(existing, size=remote.size, etag=remote.etag):
             discard_partial(temp_path)
             self.live_manager.update_log(
@@ -165,8 +173,8 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                     "remote file changed."
                 ),
             )
-            return None, False
-        return existing, False
+            return None, remote
+        return existing, remote
 
     def _download_headers(self) -> dict[str, str]:
         return (
@@ -246,12 +254,13 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         while attempt < self.retries:
             if self._ctx.cancelled:
                 return DownloadOutcome.RETRYABLE_FAILURE
-            outcome = SegmentedDownloader(
+            downloader = SegmentedDownloader(
                 url=self.download_info.download_link, headers=headers, temp_path=temp_path,
                 manifest=manifest, progress_manager=self.live_manager,
                 task=self.download_info.task, governor=self._ctx.governor,
                 cancel_event=self._ctx.cancel_event,
-            ).run()
+            )
+            outcome = downloader.run()
             if outcome is SegmentedOutcome.COMPLETE:
                 return finalise_download(
                     file_size=manifest.size, total_downloaded=manifest.size,
@@ -289,7 +298,12 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
                 return DownloadOutcome.TERMINAL_FAILURE
             if outcome is SegmentedOutcome.CANCELLED:
                 return DownloadOutcome.RETRYABLE_FAILURE
-            if not self._retry_with_backoff(attempt, event="Retrying download"):
+            if downloader.last_error is not None:
+                # An HTTP status (429/5xx/521/...): same status-page check,
+                # maintenance event and backoff as the single-stream path.
+                if not self._handle_request_exception(downloader.last_error, attempt):
+                    break
+            elif not self._retry_with_backoff(attempt, event="Retrying download"):
                 break
             attempt += 1
         return DownloadOutcome.RETRYABLE_FAILURE
@@ -342,6 +356,7 @@ class MediaDownloader:  # pylint: disable=too-many-instance-attributes
         if (
             status != HTTPStatus.PARTIAL_CONTENT
             or not self._content_range_ok(response, resume_from, manifest.size)
+            or etags_conflict(manifest.etag, response.headers.get("ETag"))
         ):
             return _SingleVerdict.RESET
         return _SingleVerdict.STREAM

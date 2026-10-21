@@ -27,7 +27,7 @@ def _positive_int(value: object) -> int | None:
     return number if number > 0 else None
 
 
-def probe_remote(url: str, headers: dict[str, str], *, timeout: float = 10.0) -> RemoteInfo:
+def probe_remote(url: str, headers: dict[str, str], *, timeout: float = 30.0) -> RemoteInfo:
     """HEAD ``url`` with the same headers the GET will use.
 
     Returns :data:`RemoteInfo` with ``size=None`` / ``accepts_ranges=False``

@@ -216,6 +216,29 @@ def test_segmented_416_marks_manifest_invalid(range_server, tmp_path):
     assert outcome is SegmentedOutcome.MANIFEST_INVALID
 
 
+def test_segmented_206_with_different_etag_is_manifest_invalid(range_server, tmp_path):
+    manifest = TransferManifest.plan(len(range_server.data), 4, etag='"some-other-object"')
+    outcome, _, manifest, _ = _run(range_server, tmp_path, manifest=manifest)
+    assert outcome is SegmentedOutcome.MANIFEST_INVALID
+    assert manifest.bytes_done == 0                    # nothing written from the wrong object
+
+
+def test_segmented_weak_etag_of_same_value_is_accepted(range_server, tmp_path):
+    manifest = TransferManifest.plan(len(range_server.data), 4, etag='W/"test-etag-1"')
+    outcome, _, _, _ = _run(range_server, tmp_path, manifest=manifest)
+    assert outcome is SegmentedOutcome.COMPLETE
+
+
+def test_segmented_records_last_http_error(range_server, tmp_path):
+    range_server.fail_status_from_request = 1
+    temp = tmp_path / "file.bin.temp"
+    manifest = TransferManifest.plan(len(range_server.data), 4, etag=range_server.etag)
+    dl = SegmentedDownloader(url=range_server.url, headers={}, temp_path=temp, manifest=manifest,
+                             progress_manager=_PM(), task=0)
+    assert dl.run() is SegmentedOutcome.RETRYABLE
+    assert dl.last_error is not None and dl.last_error.response.status_code == 503
+
+
 def test_segmented_short_pwrite_still_writes_every_byte(range_server, tmp_path, monkeypatch):
     real_pwrite = os.pwrite
 

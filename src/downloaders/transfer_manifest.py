@@ -223,6 +223,12 @@ def _etag_value(etag: str | None) -> str | None:
     return value.strip('"') or None
 
 
+def etags_conflict(local: str | None, remote: str | None) -> bool:
+    """True only when both ETags are present and differ (weak ``W/`` compares by value)."""
+    left, right = _etag_value(local), _etag_value(remote)
+    return left is not None and right is not None and left != right
+
+
 def manifest_matches_remote(
     manifest: TransferManifest, *, size: int | None, etag: str | None,
 ) -> bool:
@@ -234,10 +240,7 @@ def manifest_matches_remote(
     """
     if size is None or size != manifest.size:
         return False
-    local, remote = _etag_value(manifest.etag), _etag_value(etag)
-    if local is None or remote is None:
-        return True
-    return local == remote
+    return not etags_conflict(manifest.etag, etag)
 
 
 def discard_partial(temp_path: Path) -> None:

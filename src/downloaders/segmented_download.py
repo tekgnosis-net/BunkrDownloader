@@ -28,6 +28,7 @@ from .remote_probe import RemoteInfo
 from .transfer_manifest import (
     Segment,
     TransferManifest,
+    etags_conflict,
     manifest_path,
     save_manifest,
     sync_data,
@@ -117,6 +118,11 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
     omitted, a private governor with one slot per segment is used.
     ``cancel_event`` is the job's cancel flag, checked between chunks and
     while waiting for a slot.
+
+    After :meth:`run`, ``last_error`` holds the last worker
+    ``RequestException`` that carried an HTTP response (429, 5xx, other
+    non-2xx statuses) so the caller can apply its status-page / maintenance
+    handling to a ``RETRYABLE`` outcome.
     """
 
     def __init__(  # pylint: disable=too-many-arguments
@@ -151,6 +157,7 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         self._save_order = threading.Lock()
         self._generation = 0
         self._saved_generation = 0
+        self.last_error: RequestException | None = None
 
     # ---- public -----------------------------------------------------------
 
@@ -205,6 +212,8 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
 
     def _vote(self, exc: Exception) -> SegmentedOutcome:
         """Outcome a worker's exception stands for (see :func:`_classify`)."""
+        if isinstance(exc, RequestException) and exc.response is not None:
+            self.last_error = exc
         result = _classify(exc)
         if result is SegmentedOutcome.CANCELLED and not self.cancel_event.is_set():
             # A slot wait abandoned because of our own fail-fast: no vote.
@@ -321,6 +330,8 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         expected = f"bytes {segment.next_offset}-{segment.end}/{self.manifest.size}"
         if content_range.replace(" ", "") != expected.replace(" ", ""):
             raise _ManifestInvalid()
+        if etags_conflict(self.manifest.etag, resp.headers.get("ETag")):
+            raise _ManifestInvalid()   # same size, different object: on-disk bytes are stale
 
 
 _SEVERITY = {

@@ -173,14 +173,78 @@ def test_single_resume_with_wrong_content_range_restarts(range_server, tmp_path,
     assert _sha(final.read_bytes()) == _sha(range_server.data)
 
 
-def test_probe_failure_keeps_partial(range_server, tmp_path, fake_live_manager):
+def test_probe_failure_resumes_single_partial_from_manifest(range_server, tmp_path,
+                                                            fake_live_manager):
+    final, _ = _seed_single(range_server, tmp_path, done=1000, temp_bytes=1000)
+    dl = _dl(fake_live_manager, tmp_path, range_server.url, min_mb=100)
+    with patch("src.downloaders.media_downloader.probe_remote",
+               return_value=RemoteInfo(None, None, False)), \
+            patch("src.downloaders.media_downloader.requests.get",
+                  wraps=requests.get) as get:
+        assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
+    assert get.call_args.kwargs["headers"]["Range"] == "bytes=1000-"   # resumed, not restarted
+    assert _sha(final.read_bytes()) == _sha(range_server.data)
+    assert any("Probe failed" in d for _, d in fake_live_manager.logs)
+
+
+def test_probe_failure_resumes_segmented_partial_from_manifest(range_server, tmp_path,
+                                                               fake_live_manager):
+    final = tmp_path / "file.bin"
+    temp = final.with_suffix(".temp")
+    manifest = TransferManifest.plan(len(range_server.data), 4, etag=range_server.etag)
+    s0 = manifest.segments[0]
+    with temp.open("wb") as fh:
+        fh.truncate(len(range_server.data))
+        fh.write(range_server.data[: s0.length])
+    s0.done = s0.length
+    save_manifest(manifest, manifest_path(temp))
+    dl = _dl(fake_live_manager, tmp_path, range_server.url)
+    with patch("src.downloaders.media_downloader.probe_remote",
+               return_value=RemoteInfo(None, None, False)):
+        assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
+    assert range_server.get_count == 3                 # segment 0 trusted, not re-fetched
+    assert _sha(final.read_bytes()) == _sha(range_server.data)
+
+
+def test_probe_failure_then_etag_mismatch_restarts_single(range_server, tmp_path,
+                                                          fake_live_manager):
     final, temp = _seed_single(range_server, tmp_path, done=1000, temp_bytes=1000)
+    stale = TransferManifest.plan(len(range_server.data), 1, etag='"other-object"')
+    stale.segments[0].done = 1000
+    save_manifest(stale, manifest_path(temp))
     dl = _dl(fake_live_manager, tmp_path, range_server.url, min_mb=100)
     with patch("src.downloaders.media_downloader.probe_remote",
                return_value=RemoteInfo(None, None, False)):
-        assert dl.attempt_download(str(final)) is DownloadOutcome.RETRYABLE_FAILURE
-    assert temp.exists() and manifest_path(temp).exists()
-    assert any("keeping partial" in d for _, d in fake_live_manager.logs)
+        assert dl.attempt_download(str(final)) is DownloadOutcome.SUCCESS
+    assert range_server.get_count == 2                 # rejected 206, then a fresh full GET
+    assert _sha(final.read_bytes()) == _sha(range_server.data)
+
+
+def test_segmented_http_error_routes_through_request_exception_handler(
+    range_server, tmp_path, fake_live_manager,
+):
+    range_server.fail_status_from_request = 1           # every segment GET answers 503
+    dl = _dl(fake_live_manager, tmp_path, range_server.url)
+    with patch.object(dl, "_handle_request_exception", return_value=False) as handler, \
+            patch.object(dl, "_retry_with_backoff") as plain_backoff:
+        assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.RETRYABLE_FAILURE
+    handler.assert_called_once()
+    err, attempt = handler.call_args.args
+    assert err.response.status_code == 503 and attempt == 0
+    plain_backoff.assert_not_called()
+
+
+def test_segmented_521_reaches_maintenance_handling(range_server, tmp_path, fake_live_manager):
+    range_server.fail_status_from_request = 1
+    range_server.fail_status = 521
+    dl = _dl(fake_live_manager, tmp_path, range_server.url,
+             extra={"skip_status_check": False, "maintenance_strategy": "skip"})
+    with patch("src.downloaders.media_downloader.refresh_server_status",
+               return_value=("Maintenance", True)), \
+            patch("src.downloaders.media_downloader.log_maintenance_event") as logged:
+        assert dl.attempt_download(str(tmp_path / "file.bin")) is DownloadOutcome.RETRYABLE_FAILURE
+    logged.assert_called_once()
+    assert any(e == "Maintenance detected" for e, _ in fake_live_manager.logs)
 
 
 def test_refresh_cap_is_bounded(range_server, tmp_path, fake_live_manager):
@@ -232,6 +296,7 @@ def test_refresh_reprobes_and_replans_when_remote_changed(range_server, tmp_path
 
     def fake_refresh():
         range_server.forbid_from_request = None
+        range_server.etag = '"new-etag"'   # the object really changed
         return range_server.url + "?token=fresh"
     final = tmp_path / "file.bin"
     with patch.object(dl, "_refresh_link", side_effect=fake_refresh), \
@@ -269,6 +334,7 @@ def test_single_refresh_hands_off_to_segmented_when_replan_is_segmented(
 
     def fake_refresh():
         range_server.forbid_from_request = None
+        range_server.etag = '"new-etag"'   # the object really changed
         return range_server.url + "?token=fresh"
     # The re-plan must be segmented: lower the threshold after the first (single) plan.
     real_replan = dl._replan_after_refresh
