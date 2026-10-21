@@ -12,11 +12,14 @@ album retry pass:
 - ``cancel_event``: set by the web cancel endpoint or by Ctrl-C in the CLI;
   workers check it between chunks and before every backoff sleep, so a
   cancel stops the transfer within one chunk and leaves a resumable partial.
+- ``started_at``: wall-clock start of the job; files modified since then
+  belong to this run and are never treated as leftovers of an old build.
 """
 
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -35,6 +38,7 @@ class TransferContext:
     settings: TransferSettings
     governor: ConnectionGovernor
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    started_at: float = field(default_factory=time.time)
 
     @property
     def cancelled(self) -> bool:
