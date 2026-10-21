@@ -124,6 +124,12 @@ You can configure the deployment by setting the following environment variables 
 | `STATUS_PAGE_TIMEOUT_SECONDS` 🆕 | Seconds to wait for the Bunkr status page on job start and failure re-checks (clamped 1–60). A failed fetch is logged as a single warning and the job continues without host data. | `10` |
 | `MAINTENANCE_RETRY_STRATEGY` 🆕 | Strategy for maintenance: `backoff` (retry with delays) or `skip` (log and skip). | `backoff` |
 | `MAINTENANCE_BACKOFF_DELAYS_SECONDS` 🆕 | Comma-separated waits between maintenance retries, one per retry, each clamped 1–3600. | `120,300,600` |
+| `DOWNLOAD_SEGMENTS` 🆕 | Parallel byte ranges per file (1–16). `1` = single stream, still resumable. The web Settings page can override per job. | `4` |
+| `SEGMENT_MIN_FILE_SIZE_MB` 🆕 | Files below this size use a single stream; also the minimum size of one segment (1–4096). | `32` |
+| `MAX_CONCURRENT_CONNECTIONS` 🆕 | Cap on simultaneous download connections across all workers and segments (1–64). A per-job value can only lower this ceiling, never raise it; the cap is raised to at least `max_workers` so workers are never starved. | `12` |
+| `PARTIAL_MAX_AGE_HOURS` 🆕 | Abandoned `.temp` + `.temp.parts` pairs older than this are deleted when a job starts; `0` disables (0–8760). Operator setting: shown read-only in the web Settings page; not adjustable per job (any LAN client could otherwise sweep other jobs' partials). | `168` |
+| `LINK_REFRESH_MAX` 🆕 | Max signed-URL re-resolutions per file attempt when the CDN answers 401/403 mid-transfer (0–10). | `2` |
+| `MANIFEST_RESET_MAX` 🆕 | Max discard-and-restart cycles per file attempt when the on-disk partial proves invalid (416 / Content-Range mismatch) (0–5). | `1` |
 | `ALLOWED_DOWNLOAD_ROOT` 🆕 | Filesystem root that incoming `custom_path` and `/api/directories?basePath` values must resolve under. Rejects any path that escapes this root with HTTP 422. Set to `/` to disable sandboxing (not recommended for public-facing deployments). | `<cwd>/Downloads` |
 | `API_ACCESS_TOKEN` 🆕 | Shared bearer token. When set, every `/api/*` request must carry `Authorization: Bearer <token>` and every `/ws/*` connection must include `?token=<token>`. When unset, the API is unauthenticated and a warning is logged on startup — safe only on a trusted LAN. | *(unset)* |
 | `ALLOWED_ORIGINS` 🆕 | Comma-separated list of CORS-allowed origins (e.g. `https://dash.example.com,https://admin.example.com`). Takes precedence over `ALLOWED_ORIGIN_REGEX` when set. | *(unset)* |
@@ -177,7 +183,7 @@ The `bunkr` service in `docker-compose.vpn.yml` mirrors the one in `docker-compo
 ## CLI Usage
 ```bash
 # Single URL
-python3 downloader.py <bunkr_url> [--include term ...] [--ignore term ...] [--custom-path /path] [--disable-ui] [--disable-disk-check] [--skip-status-check] [--maintenance-strategy backoff|skip] [--status-cache-ttl SECONDS]
+python3 downloader.py <bunkr_url> [--include term ...] [--ignore term ...] [--custom-path /path] [--disable-ui] [--disable-disk-check] [--skip-status-check] [--maintenance-strategy backoff|skip] [--status-cache-ttl SECONDS] [--segments N] [--segment-min-size-mb MB] [--max-connections N] [--partial-max-age-hours H]
 
 # Batch mode (URLs.txt)
 python3 main.py [shared flags]
@@ -189,6 +195,7 @@ python3 main.py [shared flags]
 - `--skip-status-check` 🆕 disables real-time status page checks on download failures (defaults to enabled).
 - `--status-cache-ttl SECONDS` 🆕 controls cache duration for status page results (default: 60s).
 - `--maintenance-strategy backoff|skip` 🆕 chooses retry behavior: `backoff` retries with longer delays (2min, 5min, 10min), `skip` logs and skips maintenance files.
+- `--segments` 🆕 parallel ranges per file (1–16); `--segment-min-size-mb`, `--max-connections` and `--partial-max-age-hours` mirror the env knobs above.
 
 ## Web Dashboard
 - **Job launcher** – paste URLs, set filters, toggle the disk check, or choose a custom destination via the directory browser.
@@ -204,6 +211,8 @@ python3 main.py [shared flags]
 - Web UI tooltips describe every form element; hover to see accepted formats and side effects.
 - Downloads default to `Downloads/` in the working directory unless `custom_path` (CLI) or the directory picker overrides it.
 - `session.log` persists problematic URLs so you can retry them later. 🆕 Maintenance events are logged with format: `[MAINTENANCE] timestamp | subdomain | status | url`.
+- 🆕 **Segmented transfer**: large files are fetched as several byte ranges in parallel into one pre-sized `.temp` file. Tune with `DOWNLOAD_SEGMENTS` / `SEGMENT_MIN_FILE_SIZE_MB` / `MAX_CONCURRENT_CONNECTIONS`, or per job from the web **Settings → Transfer** group (server/env values are the defaults; your saved values win). The group lets you adjust segments, minimum file size and max connections per job; the partial sweep age and the two self-heal caps (`LINK_REFRESH_MAX`, `MANIFEST_RESET_MAX`) are displayed from the server.
+- 🆕 **Resume**: every transfer keeps a small `<name>.temp.parts` manifest (remote size, ETag, per-segment progress). A download interrupted by a network error, an expired link, a cancel or a restart continues from the bytes already on disk — on the next retry **and** on a later run of the same URL — as long as the remote size/ETag still match. Abandoned partials are swept after `PARTIAL_MAX_AGE_HOURS`.
 
 ## Architecture
 - `downloader.py` / `main.py` call `validate_and_download`, which builds a `SessionInfo` and streams progress via `LiveManager`.
