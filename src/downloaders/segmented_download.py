@@ -265,14 +265,14 @@ class SegmentedDownloader:  # pylint: disable=too-many-instance-attributes,too-f
         self._flush()
 
     def _check_response(self, resp: requests.Response, segment: Segment) -> None:
-        if resp.status_code in (HTTPStatus.FORBIDDEN, 401):
+        if resp.status_code in (HTTPStatus.FORBIDDEN, HTTPStatus.UNAUTHORIZED):
             raise _LinkExpired()
-        if resp.status_code == 416:
+        if resp.status_code == HTTPStatus.RANGE_NOT_SATISFIABLE:
             raise _ManifestInvalid()
         if resp.status_code == HTTPStatus.OK:
             raise _RangeUnsupported()
         resp.raise_for_status()
-        if resp.status_code != 206:
+        if resp.status_code != HTTPStatus.PARTIAL_CONTENT:
             raise _ManifestInvalid()
         content_range = resp.headers.get("Content-Range", "")
         expected = f"bytes {segment.next_offset}-{segment.end}/{self.manifest.size}"
