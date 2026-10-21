@@ -118,7 +118,7 @@ class DownloadRequest(BaseModel):
     )
     max_connections: int | None = Field(
         default=None, ge=1, le=64,
-        description="Process-wide cap on simultaneous download connections.",
+        description="Cap on this job's simultaneous download connections (at least max_workers).",
     )
     partial_max_age_hours: int | None = Field(
         default=None, ge=0, le=8760,

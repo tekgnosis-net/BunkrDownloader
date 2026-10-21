@@ -190,6 +190,18 @@ Manual/real: one album on the dev box with `DOWNLOAD_SEGMENTS=4`, kill the proce
 - CLAUDE.md: update the `src/downloaders/` bullet (manifest format, governor, resume rules) and the knobs list.
 - Compose files: forward the four env vars.
 
+## Amendments after the whole-branch review (2026-10-21)
+
+The implementation differs from the sections above in these points; the code and CLAUDE.md are authoritative.
+
+- **Per-job governor, not process-wide.** Each job builds a `TransferContext` (settings, `ConnectionGovernor(max(max_connections, max_workers))`, `cancel_event`). Single streams hold a slot for the GET and body, like segment workers.
+- **Durability.** Data is `fdatasync`-ed after the progress snapshot and before every manifest save, and before the final rename, so a host crash can lose progress but never produce a manifest that vouches for unsynced bytes.
+- **Temp name.** `<final name>.temp` (appended, via `transfer_manifest.temp_path_for`), not `<stem>.temp`; a lone legacy `<stem>.temp` without a manifest is deleted on the next attempt of that file.
+- **Probe failure.** A failed HEAD no longer blocks a resume: a manifest with progress is used as the remote description and every 206 is checked against its size (`Content-Range`) and ETag.
+- **5xx in segments.** HTTP errors from segment workers go through the same status-page/maintenance handling as single streams.
+- **Cancellation.** The web cancel endpoint and Ctrl-C set the context's `cancel_event`; workers stop within one chunk, backoff sleeps wake immediately, and a cancelled file is not queued for the retry pass.
+- **Pre-size unsupported.** If `ftruncate` fails with EPERM/EINVAL/ENOTSUP the file is downloaded with one stream.
+
 ## Risks and mitigations
 
 - **More connections → Bunkr IP blocks.** Default cap 12 equals today's worst case of 3 workers × (1 GET + 1 HEAD + retries). Documented; the VPN variant mitigates.

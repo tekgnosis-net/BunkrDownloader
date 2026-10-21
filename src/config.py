@@ -171,7 +171,8 @@ MAINTENANCE_BACKOFF_DELAYS_SECONDS = _env_int_list_clamped(
 DOWNLOAD_SEGMENTS = _env_int_clamped("DOWNLOAD_SEGMENTS", 4, 1, 16)
 # Files smaller than this stay single-stream; also the minimum bytes per segment.
 SEGMENT_MIN_FILE_SIZE_MB = _env_int_clamped("SEGMENT_MIN_FILE_SIZE_MB", 32, 1, 4096)
-# Process-wide cap on simultaneous streaming GETs (workers x segments).
+# Default per-job cap on simultaneous streaming GETs (segments and single streams);
+# each job's governor is sized max(this, max_workers).
 MAX_CONCURRENT_CONNECTIONS = _env_int_clamped("MAX_CONCURRENT_CONNECTIONS", 12, 1, 64)
 # Abandoned .temp/.temp.parts older than this are deleted at job start; 0 disables.
 PARTIAL_MAX_AGE_HOURS = _env_int_clamped("PARTIAL_MAX_AGE_HOURS", 168, 0, 8760)
@@ -581,7 +582,7 @@ def add_common_arguments(parser: ArgumentParser) -> None:
         "--max-connections",
         type=int,
         default=MAX_CONCURRENT_CONNECTIONS,
-        help="Process-wide cap on simultaneous download connections (default: %(default)s).",
+        help="Per-job cap on simultaneous download connections (default: %(default)s).",
     )
     parser.add_argument(
         "--partial-max-age-hours",
