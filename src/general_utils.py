@@ -64,14 +64,22 @@ async def fetch_page(
     headers = network.headers if network else HEADERS
     fallback_domain = network.fallback_domain if network else None
 
+    def give_up(message: str) -> None:
+        """Log why the page is unavailable and record the URL for a manual retry.
+
+        Every path that returns ``None`` goes through here exactly once, so a
+        page that could not be loaded always lands in ``session.log``.
+        """
+        logging.error(message)
+        write_on_session_log(url)
+
     def handle_response(response: Response) -> BeautifulSoup | None:
-        """Process the HTTP response and handles specific status codes."""
+        """Turn a response into soup, or give up on a known failure status."""
         if response.status_code in FETCH_ERROR_MESSAGES:
-            log_message = FETCH_ERROR_MESSAGES[response.status_code].format(url=url)
-            logging.exception(log_message)
-            write_on_session_log(url)
+            give_up(FETCH_ERROR_MESSAGES[response.status_code].format(url=url))
             return None
 
+        response.raise_for_status()
         return BeautifulSoup(response.text, "html.parser")
 
     for attempt in range(retries):
@@ -84,7 +92,6 @@ async def fetch_page(
                 url = change_domain_to_cr(url, fallback_domain=fallback_domain)
                 continue  # Retry immediately with .cr
 
-            response.raise_for_status()
             return handle_response(response)
 
         # Connection dropped unexpectedly by the server
@@ -95,12 +102,12 @@ async def fetch_page(
                 delay = 2 ** (attempt + 1) + random.uniform(1, 2)  # noqa: S311
                 await asyncio.sleep(delay)
 
-        # Catch-all for request-related errors
+        # Catch-all for request-related errors (HTTP errors, timeouts, DNS)
         except requests.RequestException as req_err:
-            log_message = f"Request error for {url}: {req_err}"
-            logging.exception(log_message)
+            give_up(f"Request error for {url}: {req_err}")
             return None
 
+    give_up(f"Gave up on {url} after {retries} dropped connections.")
     return None
 
 
