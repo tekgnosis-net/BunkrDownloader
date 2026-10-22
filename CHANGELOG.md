@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## v0.16.1 (2026-10-22)
+
+### Documentation
+
+* docs(readme): release notes for v0.16.0 (#32)
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`c3b7aea`](https://github.com/tekgnosis-net/BunkrDownloader/commit/c3b7aeaedbd5dc16c958b2ac38bc508f1e7be215))
+
+### Fix
+
+* fix(download): skip an album item page that cannot be loaded instead of failing the job (#33)
+
+One item page returning 404/5xx or timing out raised RuntimeError out of
+the album gather, which failed the whole job, abandoned the files still in
+flight and skipped the retry pass. The item is now skipped like an
+unresolvable link: logged as &#34;Fetch failed&#34;, task row hidden, album
+continues.
+
+fetch_page only wrote the URL to session.log on a branch that
+raise_for_status() made unreachable. Every give-up path now records the
+URL exactly once, so a skipped page can be retried from session.log.
+
+Claude-Session: https://claude.ai/code/session_01CBGjUxHLViXgG3pTtdKDoE ([`40715a9`](https://github.com/tekgnosis-net/BunkrDownloader/commit/40715a9e80da2b9d5ce0fb278fa5bdb78830d662))
+
 ## v0.16.0 (2026-10-21)
 
 ### Documentation
