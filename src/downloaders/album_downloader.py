@@ -65,11 +65,16 @@ class AlbumDownloader:
             # Process the download of an item
             item_soup = await fetch_page(item_page, network=network)
             if item_soup is None:
+                # The page never loaded (404, 5xx, timeout). fetch_page has
+                # already recorded the URL in session.log for a manual retry;
+                # skip this item like an unresolved link so the rest of the
+                # album continues and the overall counter can advance.
                 self.live_manager.update_log(
                     event="Fetch failed",
-                    details=f"Unable to load album item page: {item_page}",
+                    details=f"Skipping {item_page}: unable to load the album item page.",
                 )
-                raise RuntimeError(f"Failed to load album item page: {item_page}")
+                self.live_manager.update_task(task, completed=100, visible=False)
+                return
 
             item_download_link, item_filename = await get_download_info(
                 item_page, item_soup, network=network,

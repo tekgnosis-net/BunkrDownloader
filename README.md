@@ -42,6 +42,11 @@ Rich CLI + web dashboard for grabbing albums and files from Bunkr with resilient
 
 ## Latest Release Updates
 
+**v0.16.1** — October 2026
+
+- **One dead item page no longer kills the album.** An item page that cannot be loaded (404, 5xx, timeout) used to raise out of the album run, failing the whole job and abandoning the files still in flight. It is now skipped like an unresolvable link: logged as *Fetch failed*, its row hidden, and the rest of the album, including the final retry pass, continues.
+- **Failed pages always reach `session.log`.** `fetch_page` recorded a URL only on a branch that an earlier `raise_for_status()` made unreachable. Every give-up path now writes the URL exactly once, so a skipped item page can be retried from `session.log`.
+
 **v0.16.0** — October 2026
 
 - **Process-wide connection ceiling**: `MAX_TOTAL_CONNECTIONS` (0–256, default `0` = none) caps simultaneous download connections across *all* running jobs, on top of each job's own `MAX_CONCURRENT_CONNECTIONS`. Set it if Bunkr rate-limits your IP when several jobs run together.
