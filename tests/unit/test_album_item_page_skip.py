@@ -1,6 +1,6 @@
 """An album item page that cannot be loaded is skipped, never fatal to the job."""
 
-# pylint: disable=missing-function-docstring,protected-access
+# pylint: disable=missing-function-docstring,protected-access,too-few-public-methods
 from __future__ import annotations
 
 import asyncio
